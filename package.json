@@ -1,0 +1,12 @@
+{
+  "name": "nuestro-rincon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Correspondencia privada para dos personas, con frontend estático y Supabase Edge Functions.",
+  "type": "module",
+  "scripts": {
+    "check": "node tools/verify-project.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build:pages": "node scripts/build-pages.mjs"
+  }
+}

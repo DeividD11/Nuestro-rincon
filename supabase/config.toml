@@ -1,0 +1,9 @@
+project_id = "tiqbmuubpbmxqvtkcdhq"
+
+# El frontend usa autenticación propia: las Edge Functions verifican tokens
+# aleatorios de sesión consultando sus hashes y vencimientos en PostgreSQL.
+[functions.auth-api]
+verify_jwt = false
+
+[functions.letters-api]
+verify_jwt = false
