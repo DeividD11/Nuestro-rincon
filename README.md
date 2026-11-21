@@ -31,7 +31,7 @@ El proyecto combina una interfaz estática —publicable directamente en **GitHu
 Su arquitectura mantiene separados los modelos, las vistas, los controladores, los repositorios y los servicios. Las operaciones privadas se realizan en Supabase Edge Functions; el navegador no recibe credenciales privilegiadas ni decide por sí mismo la identidad con la que se ejecuta una operación.
 
 > [!IMPORTANT]
-> La versión incluida está preparada para continuar trabajando con el proyecto Supabase existente. El historial remoto consultado registra 23 migraciones aplicadas; `auth-api` está en versión 11 y `letters-api` en versión 8, según el baseline remoto documentado. El ZIP contiene 22 archivos SQL: 15 corresponden al historial remoto, tres son archivos heredados/no canónicos y cuatro son migraciones nuevas pendientes de validar; **no es una restauración integral de una base de datos nueva**. Consulta [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md) antes de modificar o reconstruir el backend.
+> La versión incluida está preparada para continuar trabajando con el proyecto Supabase existente. La lectura remota del 21 de noviembre de 2026 confirma 23 migraciones registradas, `auth-api` v11 y `letters-api` v8. El ZIP contiene 22 archivos SQL: 15 coinciden con el ledger, tres son heredados/no canónicos y cuatro no aparecen en el ledger. Sin embargo, las ocho RPC declaradas por esos cuatro scripts ya existen en el esquema remoto y sus permisos están limitados a `service_role`; las funciones Edge activas siguen siendo versiones anteriores. **No ejecutes las migraciones ni despliegues las funciones a ciegas**: compara las definiciones y sigue [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md). Este paquete no es una restauración integral de una base de datos nueva.
 
 <details>
   <summary><strong>Contenido de esta documentación</strong></summary>
@@ -303,18 +303,20 @@ El repositorio incluye un workflow que verifica el proyecto, ejecuta la suite au
 
 ### Pipeline
 
-El workflow `.github/workflows/pages.yml` ejecuta, en orden:
+El workflow `.github/workflows/pages.yml` separa verificación y despliegue:
+
+**Job `verify`** (en `pull_request`, `push` a `main` y ejecución manual):
 
 1. Checkout del repositorio.
-2. Preparación de Node.js 24 y Deno 2.x.
+2. Preparación de Node.js 24 y Deno 2.9.8 (versión fijada).
 3. `npm run check` para validar estructura, sintaxis, imports y configuración.
-4. `npm run check:edge` ejecuta `deno check` sobre las dos Edge Functions y el módulo compartido.
-5. `npm test` para ejecutar las pruebas automatizadas.
-6. `actions/configure-pages@v6`.
-7. `npm run build:pages` para generar el sitio en `_site/`.
-8. `actions/upload-pages-artifact@v4` y `actions/deploy-pages@v4` para publicarlo.
+4. `npm run check:edge` ejecuta `deno check` sobre `core.ts`, `auth-api` y `letters-api`.
+5. `npm test` y `npm run build:pages`.
+6. Sube el directorio `_site/` como artefacto `pages-site`.
 
-Si falla una verificación o una prueba, el workflow se detiene antes del despliegue.
+**Job `deploy`** (solo para `main`, después de `verify`): descarga el artefacto verificado, ejecuta `actions/configure-pages@v6`, prepara el artefacto de Pages y publica mediante `actions/deploy-pages@v4`. Una pull request nunca despliega el sitio.
+
+Si falla una verificación o una prueba, el job `deploy` no se ejecuta.
 
 **URL del sitio:** https://deividd11.github.io/Nuestro-rincon/
 
@@ -333,23 +335,25 @@ Supabase inyecta la credencial de servidor en el runtime de Edge Functions. El c
 
 ### Estado del proyecto existente
 
-La documentación de baseline registra el proyecto Supabase asociado como saludable en la revisión del **19 de noviembre de 2026**, con:
+La documentación histórica registra el proyecto Supabase asociado como saludable en la revisión del **19 de noviembre de 2026**. Una lectura remota posterior del **21 de noviembre de 2026** está documentada en [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md) y detectó diferencias entre el historial de migraciones, el esquema y las Edge Functions desplegadas. El inventario histórico indicaba:
 
 - PostgreSQL 17.
 - 23 migraciones registradas en el historial remoto.
 - `auth-api` v11 y `letters-api` v8 en estado `ACTIVE` en la revisión del 19 de noviembre de 2026.
 - RLS activado en las tablas privadas.
 
-El paquete incluye 22 archivos SQL, pero no el historial completo de 23 migraciones remotas (15 coinciden con el historial, tres son archivos heredados/no canónicos y cuatro son migraciones propuestas pendientes: limitación de intentos, consistencia de eliminación compartida, purga de cartas huérfanas/paginación y actualización transaccional del perfil). Por tanto:
+El paquete incluye 22 archivos SQL, pero no el historial completo de 23 migraciones remotas (15 coinciden con el historial, tres son archivos heredados/no canónicos y cuatro scripts locales no aparecen en el ledger). La inspección remota del 21 de noviembre detectó que las ocho funciones SQL declaradas por esos cuatro scripts existen ya en la base y que sus permisos están limitados a `service_role`; también existen el trigger de purga al deshabilitar una cuenta y los índices de paginación. Las Edge Functions desplegadas, sin embargo, siguen en versiones anteriores y no llaman a las RPC nuevas. Por tanto:
 
-- Para publicar solo el frontend, no necesitas desplegar Edge Functions ni ejecutar migraciones.
-- No ejecutes todas las migraciones del ZIP sobre el proyecto existente: ya están aplicadas en ese entorno.
+- No ejecutes `supabase db push --remote` ni apliques los cuatro scripts a ciegas. Compara primero las definiciones y permisos exactos; puede hacer falta reconciliar el ledger sin volver a ejecutar DDL existente.
+- No despliegues `auth-api` o `letters-api` desde el ZIP hasta validar el conjunto completo en un entorno aislado.
+- Para publicar solo el frontend, comprueba antes que sus llamadas sean compatibles con las Edge Functions que siguen activas.
 - No uses este paquete como restauración completa de una base Supabase vacía.
-- Antes de trasladar la aplicación a otro proyecto, recupera y valida el esquema histórico completo, los roles, permisos, funciones, triggers y políticas RLS.
 
 El estado de referencia y las limitaciones se documentan en [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md).
 
 ## 11. Seguridad, privacidad y límites conocidos
+
+> **E2EE todavía no está implementado.** Las cartas y borradores pueden permanecer en texto legible en PostgreSQL y en el almacenamiento local del navegador. `docs/E2EE_ARCHITECTURE.md` es una propuesta de diseño, no una garantía de cifrado activo. No almacenes información especialmente sensible bajo la expectativa de que el servidor no pueda leerla.
 
 ### Controles implementados
 
@@ -415,6 +419,7 @@ La distribución actual incorpora **113 pruebas automatizadas** de contratos, re
 - [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md): estado remoto conocido, migraciones y funciones desplegadas.
 - [`docs/LETTERS_CONSISTENCY.md`](docs/LETTERS_CONSISTENCY.md): semántica de carpetas, deduplicación, navegación rápida entre respuestas, borradores no vacíos, consistencia visual y eliminación compartida.
 - [`docs/E2EE_ARCHITECTURE.md`](docs/E2EE_ARCHITECTURE.md): diseño, límites, recuperación de claves y migración futura del cifrado de extremo a extremo.
+- [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md): sincronización segura de código, historial Git, migraciones y Edge Functions.
 - [`supabase/schema/README.md`](supabase/schema/README.md): referencia del esquema disponible.
 
 ## 15. Licencia

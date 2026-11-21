@@ -1,4 +1,4 @@
-import { parseHTML } from 'linkedom';
+import { DOMParser } from 'linkedom';
 
 const encoder = new TextEncoder();
 const ACCESS_TTL_MS = 15 * 60 * 1000;
@@ -32,6 +32,14 @@ function decodeBase64Url(value: string): Uint8Array {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4);
   const binary = atob(normalized);
   return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+// Deno 2 / TypeScript 5.9 distinguen Uint8Array<ArrayBufferLike> de
+// BufferSource. Copiamos el salt a un ArrayBuffer propio antes de Web Crypto.
+function toOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
 }
 
 export function base64Url(bytes: Uint8Array): string {
@@ -82,7 +90,7 @@ export async function verifyPassword(password: string, encoded: string): Promise
     const expected = decodeBase64Url(parts[3]);
     const material = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
     const bits = new Uint8Array(await crypto.subtle.deriveBits(
-      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, material, expected.length * 8
+      { name: 'PBKDF2', salt: toOwnedArrayBuffer(salt), iterations, hash: 'SHA-256' }, material, expected.length * 8
     ));
     const actual = base64Url(bits);
     const wanted = base64Url(expected);
@@ -317,7 +325,9 @@ export async function readJson(req: Request): Promise<Record<string, unknown>> {
 export function sanitizeRichHtml(html: unknown): string {
   const input = String(html ?? '');
   if (input.length > 150_000) throw new Error('LETTER_TOO_LARGE');
-  const { document } = parseHTML(`<html><body>${input}</body></html>`);
+  const document = new DOMParser().parseFromString(`<html><body>${input}</body></html>`, 'text/html');
+  const body = document.querySelector('body');
+  if (!body) return '';
   const allowedTags = new Set(['P', 'DIV', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'UL', 'OL', 'LI', 'BLOCKQUOTE']);
   const allowedAlignments = new Set(['left', 'center', 'right', 'justify']);
   const encode = (value: string) => value
@@ -335,7 +345,7 @@ export function sanitizeRichHtml(html: unknown): string {
     if (tag === 'BR') return '<br>';
     return `<${name}${style}>${children}</${name}>`;
   };
-  return [...document.body.childNodes].map(walk).join('').slice(0, 120_000);
+  return Array.from(body.childNodes).map(walk).join('').slice(0, 120_000);
 }
 
 export function publicUser(user: AppUser) {
