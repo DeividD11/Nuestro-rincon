@@ -1,0 +1,92 @@
+/* El anillo de foco mantiene al menos 3:1 frente a las superficies del tema. */
+:root { --focus-ring: #a36856; }
+html[data-theme="dark"] { --focus-ring: #d5a18f; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, [contenteditable="true"]:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+html[data-theme="dark"] .btn-primary {
+  color: #fffaf5;
+  background: linear-gradient(135deg, #8b594b, #704538);
+}
+html[data-theme="dark"] .btn-primary:hover {
+  color: #fffaf5;
+  background: linear-gradient(135deg, #794b40, #603b32);
+}
+
+/* Accesibilidad: foco, regiones de anuncios, contraste y navegación móvil. */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+.skip-link {
+  position: fixed;
+  z-index: 300;
+  top: 10px;
+  left: 10px;
+  padding: 11px 16px;
+  transform: translateY(-160%);
+  border: 2px solid var(--accent-2);
+  border-radius: 10px;
+  background: var(--paper-2);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  box-shadow: var(--shadow);
+}
+.skip-link:focus { transform: translateY(0); }
+.topbar h1:focus { outline: 2px solid var(--accent-2); outline-offset: 5px; border-radius: 3px; }
+.mobile-nav-close { display: none; flex: 0 0 42px; }
+.mobile-nav-close:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 3px; }
+
+/* Los tonos secundarios de texto cumplen contraste AA en superficies claras. */
+:root { --muted: #71625b; }
+.nav-link { color: #6f6059; }
+.nav-label { color: #71625b; }
+.letter-meta time { color: #74655e; }
+.field input::placeholder,
+.field textarea::placeholder,
+.search-row input::placeholder,
+.editor-input::placeholder { color: #74655e; opacity: 1; }
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder,
+html[data-theme="dark"] .letter-editor:empty:before { color: #b7aaa1; opacity: 1; }
+
+@media (max-width: 1024px) {
+  .mobile-nav-close { display: grid; place-items: center; }
+  .sidebar-brand { align-items: center; }
+}
+
+/* En pantallas táctiles, los controles pequeños conservan un área de toque amplia. */
+@media (pointer: coarse) {
+  .app-shell .nav-link,
+  .app-shell button,
+  .app-shell .filter-tab,
+  .app-shell .tool-btn,
+  .toast-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .app-shell .btn-small { min-height: 44px; padding-block: 9px; }
+  .app-shell .tool-btn { width: 44px; height: 44px; }
+  .app-shell .icon-btn { width: 44px; height: 44px; flex-basis: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skip-link,
+  .sidebar,
+  .mobile-scrim,
+  .nav-link,
+  .icon-btn,
+  .btn,
+  .toast { transition: none !important; animation: none !important; }
+  html { scroll-behavior: auto !important; }
+}

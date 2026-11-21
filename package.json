@@ -12,9 +12,19 @@
     "test:integration": "node --test tests/integration/*.test.mjs",
     "test:e2e": "playwright test",
     "check:edge": "deno check --config=./supabase/functions/deno.json ./supabase/functions/_shared/core.ts ./supabase/functions/auth-api/index.ts ./supabase/functions/letters-api/index.ts",
-    "package:zip": "node scripts/package-zip.mjs"
+    "package:zip": "node scripts/package-zip.mjs",
+    "backup:db": "bash scripts/backup/create-backup.sh",
+    "restore:isolated": "bash scripts/backup/restore-to-isolated.sh",
+    "check:contrast": "node tools/contrast-audit.mjs",
+    "test:a11y": "playwright test tests/e2e/accessibility.spec.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "1.65.1"
-  }
+    "@playwright/test": "1.65.1",
+    "axe-core": "4.14.1"
+  },
+  "engines": {
+    "node": "24.22.3",
+    "npm": "11.19.1"
+  },
+  "packageManager": "npm@11.19.1"
 }

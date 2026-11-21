@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -34,7 +35,7 @@ test('los avisos emergentes son descartables y usan roles accesibles', async () 
 });
 
 test('los diálogos y avisos respetan tema oscuro, móvil y movimiento reducido', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /\.nr-dialog-backdrop\s*\{/);
   assert.match(css, /\.nr-dialog-confirm-danger/);
   assert.match(css, /html\[data-theme="dark"\] \.nr-dialog/);

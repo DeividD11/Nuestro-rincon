@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 import {
   createPendingRegistration,
   createPendingRotation,
+  createPendingRecoveryCodeBundle,
   readPendingRecovery,
   savePendingRecovery,
   markPendingRecoveryConfirmed,
@@ -35,20 +37,22 @@ test('el traspaso del código de registro se persiste de forma duradera antes de
     invitationCode: 'NR1-PRIVATE-CODE', displayName: 'Persona', username: 'persona', password: 'NO-GUARDAR-ESTA-CONTRASEÑA'
   });
   assert.match(pending.requestId, /^[0-9a-f-]{36}$/i);
-  assert.match(pending.recoveryCode, /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/);
+  assert.equal(pending.purpose, 'registration_bundle');
+  assert.equal(pending.recoveryCodes.length, 10);
+  assert.ok(pending.recoveryCodes.every(code => /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(code)));
   const stored = JSON.parse(values.get(PENDING_RECOVERY_STORAGE_KEY));
   assert.equal(stored.requestId, pending.requestId);
-  assert.equal(stored.recoveryCode, pending.recoveryCode);
+  assert.deepEqual(stored.recoveryCodes, pending.recoveryCodes);
   assert.equal(stored.password, undefined);
   assert.equal(globalThis.localStorage.getItem(PENDING_RECOVERY_STORAGE_KEY) !== null, true);
-  assert.equal(stored.purpose, 'registration');
+  assert.equal(stored.purpose, 'registration_bundle');
 }));
 
 test('el código y la clave de idempotencia se recuperan después de cerrar y reabrir el navegador', () => withLocalRecoveryStorage(() => {
   const first = createPendingRegistration({ invitationCode: 'NR1-CODE', displayName: 'Persona', username: 'persona' });
   const afterReload = readPendingRecovery();
   assert.equal(afterReload.requestId, first.requestId);
-  assert.equal(afterReload.recoveryCode, first.recoveryCode);
+  assert.deepEqual(afterReload.recoveryCodes, first.recoveryCodes);
   assert.equal(afterReload.invitationCode, first.invitationCode);
 }));
 
@@ -59,15 +63,15 @@ test('la confirmación del backend sobrevive a una recarga sin confundirse con u
   markPendingRecoveryConfirmed();
   const afterReload = readPendingRecovery();
   assert.equal(afterReload.requestId, pending.requestId);
-  assert.equal(afterReload.recoveryCode, pending.recoveryCode);
+  assert.deepEqual(afterReload.recoveryCodes, pending.recoveryCodes);
   assert.equal(afterReload.serverConfirmed, true);
 }));
 
-test('una rotación nueva tiene su propio identificador idempotente y se puede limpiar al confirmar que fue guardada', () => withLocalRecoveryStorage(() => {
-  const pending = createPendingRotation();
-  assert.equal(pending.purpose, 'rotation');
+test('una rotación nueva emite diez códigos con identificador idempotente y se puede limpiar al confirmar que fue guardada', () => withLocalRecoveryStorage(() => {
+  const pending = createPendingRecoveryCodeBundle();
+  assert.equal(pending.purpose, 'rotation_bundle');
   assert.ok(pending.requestId);
-  assert.ok(pending.recoveryCode);
+  assert.equal(pending.recoveryCodes.length, 10);
   savePendingRecovery(pending);
   clearPendingRecovery();
   assert.equal(readPendingRecovery(), null);
@@ -107,10 +111,11 @@ test('registro reintentable, entrega separada de sesión y rotación autenticada
   assert.match(controller, /createPendingRegistration/);
   assert.match(controller, /requestId: pending\.requestId/);
   assert.match(controller, /isUncertainRequestError/);
-  assert.match(controller, /createPendingRotation/);
+  const authController = await read('../assets/js/controllers/auth-controller.js');
+  assert.match(authController, /createPendingRecoveryCodeBundle/);
   assert.match(view, /id="recovery-code-form"/);
   assert.match(view, /data-action="retry-recovery-operation"/);
-  assert.match(view, /Código pendiente de confirmación/);
+  assert.match(view, /Códigos pendientes de confirmación/);
   assert.match(view, /codePending/);
   assert.match(session, /payload\.authenticated === true && payload\.accessToken && payload\.refreshToken/);
 });
@@ -212,7 +217,7 @@ test('la pantalla del código permanece estable hasta la confirmación manual de
   const view = await read('../assets/js/views/app-view.js');
   const registerStart = controller.indexOf("} else if (form.id === 'register-form') {");
   const sessionReady = controller.indexOf("if (this.session.user) {", registerStart);
-  const codeDisplay = controller.indexOf('this.view.renderRecoveryCode(this._lastRecoveryCode', sessionReady);
+  const codeDisplay = controller.indexOf('this.view.renderRecoveryCode(registrationBundle ? registrationCodes', sessionReady);
   const stableDisplay = controller.slice(sessionReady, codeDisplay);
   assert.ok(registerStart >= 0 && sessionReady > registerStart && codeDisplay > sessionReady);
   assert.match(stableDisplay, /stopSessionRefreshPolling\(\)/);
@@ -235,7 +240,7 @@ test('la pantalla del código permanece estable hasta la confirmación manual de
   const continuationEnd = controller.indexOf('async retryRecoveryOperation()', continuationStart);
   assert.match(controller.slice(continuationStart, continuationEnd), /startSessionRefreshPolling\(\)/);
   assert.match(view, /data-action="copy-recovery"/);
-  assert.match(view, /Permanecerá aquí hasta que confirmes que lo guardaste/);
+  assert.match(view, /Completa o reintenta exactamente la misma operación/);
   assert.match(view, /data-action="continue-after-recovery"/);
   assert.match(controller, /title: '¿Ya guardaste el código\?'[\s\S]*?cancelLabel: 'Seguir en esta pantalla'/);
   const initStart = controller.indexOf('async init()');
@@ -257,6 +262,6 @@ test('una sesión revocada durante la entrega no interrumpe la copia, pero tampo
   const continueEnd = controller.indexOf('async retryRecoveryOperation()', continueStart);
   const continuation = controller.slice(continueStart, continueEnd);
   assert.match(continuation, /if \(this\._sessionRevokedWhileRecoveryPending\) \{[\s\S]*?this\.session\.clearSession\(\)[\s\S]*?renderLogin/);
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /\.recovery-list[^}]*-webkit-user-select:all/);
 });

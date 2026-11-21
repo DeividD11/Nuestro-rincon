@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
   'index.html', '404.html', '.nojekyll',
-  'assets/css/app.css', 'assets/icons/mark.svg',
+  'assets/css/app.css', 'assets/css/editor.css', 'assets/css/dialogs.css', 'assets/css/security-panels.css', 'assets/css/correspondence.css', 'assets/css/accessibility.css', 'assets/css/recovery.css', 'assets/icons/mark.svg',
   'assets/js/app.js', 'assets/js/config/app-config.js',
   'assets/js/models/app-state.js', 'assets/js/views/app-view.js',
   'assets/js/controllers/app-controller.js',
@@ -20,10 +20,14 @@ const required = [
   'assets/js/repositories/letter-repository.js',
   'assets/js/services/api-client.js', 'assets/js/services/session-service.js',
   'assets/js/services/local-drafts.js', 'assets/js/services/recovery-handoff.js',
-  'assets/js/services/draft-sync-queue.js', 'assets/js/services/adaptive-poller.js', 'assets/js/utils/dom.js',
-  'tests/helpers/controller-source.mjs', 'tests/controller-modularization.test.mjs',
-  'tests/accessibility-release.test.mjs', 'scripts/package-zip.mjs',
-  'docs/ACCESSIBILITY.md', 'docs/PUSH_NOTIFICATIONS_ROADMAP.md',
+  'assets/js/services/recovery-vault.js',
+  'assets/js/services/draft-sync-queue.js', 'assets/js/services/draft-sync-service.js', 'assets/js/services/draft-persistence-service.js', 'assets/js/services/adaptive-poller.js', 'assets/js/utils/dom.js',
+  'tests/helpers/controller-source.mjs', 'tests/controller-modularization.test.mjs', 'tests/e2e/accessibility.spec.mjs',
+  'tests/accessibility-release.test.mjs', 'tests/backup-account-recovery.test.mjs', 'scripts/package-zip.mjs', 'tools/contrast-audit.mjs', 'package-lock.json', '.nvmrc',
+  'scripts/backup/create-backup.sh', 'scripts/backup/restore-to-isolated.sh', 'scripts/run-db-tests.mjs',
+  'docs/BACKUP_RESTORE.md', 'docs/ACCOUNT_RECOVERY.md',
+  'docs/ACCESSIBILITY.md', 'docs/PUSH_NOTIFICATIONS_ROADMAP.md', 'docs/CI_RELEASE_POLICY.md', 'docs/PAGINATION.md', 'docs/CONTROLLER_ARCHITECTURE.md',
+  '.github/dependabot.yml', 'tests/helpers/style-source.mjs',
   'assets/js/utils/format.js', 'supabase/config.toml', 'supabase/schema/README.md',
   'supabase/migrations/20261116045159_lock_down_direct_data_api.sql',
   'supabase/migrations/20261116055118_opaque_sessions_local_recovery.sql',
@@ -42,14 +46,20 @@ const required = [
   'supabase/migrations/20261119090000_shared_letter_purge_and_reply_guard.sql',
   'supabase/migrations/20261120173200_fix_orphaned_purge_and_list_pagination.sql',
   'supabase/migrations/20261120235900_transactional_profile_rename.sql',
+  'supabase/migrations/20261121200000_recovery_code_bundles.sql',
+  'supabase/migrations/20261121210000_cursor_based_letter_pagination.sql',
+  'supabase/tests/cursor_pagination.test.sql',
+  'supabase/tests/recovery_code_bundles.test.sql', 'supabase/tests/cursor_pagination.test.sql',
   'supabase/tests/auth_rate_limits.test.sql', 'supabase/tests/shared_letter_purge.test.sql',
   'supabase/tests/profile_rename_transaction.test.sql',
   'scripts/run-db-tests.mjs', 'docs/LETTERS_CONSISTENCY.md', 'docs/E2EE_ARCHITECTURE.md', 'docs/CONTROLLER_ARCHITECTURE.md',
   'assets/js/theme-boot.js',
+  'docs/PAGINATION.md',
   'supabase/functions/_shared/core.ts', 'supabase/functions/auth-api/index.ts',
   'supabase/functions/letters-api/index.ts', 'supabase/functions/deno.json',
   'scripts/build-pages.mjs', 'docs/SECURITY.md', 'docs/REMOTE_BASELINE.md',
-  'README.md', '.gitignore', '.github/workflows/pages.yml'
+  'README.md', '.gitignore', '.github/workflows/pages.yml', '.github/workflows/security-playwright.yml',
+  '.github/workflows/backup-database.yml', '.github/workflows/export-schema.yml'
 ];
 
 const failures = [];
@@ -208,6 +218,9 @@ if (!/^deno check --config=/m.test(packageJson.scripts['check:edge'] || '')
   failures.push('Falta la comprobación Deno de Edge Functions o la migración de purga/paginación.');
 }
 const workflow = await readFile(join(root, '.github/workflows/pages.yml'), 'utf8');
+const packageLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+if (packageLock.lockfileVersion !== 3 || packageLock.packages?.['']?.devDependencies?.['axe-core'] !== packageJson.devDependencies?.['axe-core'] || packageLock.packages?.['']?.devDependencies?.['@playwright/test'] !== packageJson.devDependencies?.['@playwright/test']) failures.push('package-lock.json no corresponde a las dependencias exactas de package.json.');
+if (!/npm ci/.test(workflow) || !/npm run check:contrast/.test(workflow) || !/npm run test:a11y/.test(workflow)) failures.push('El workflow de Pages debe instalar desde lockfile y ejecutar contraste y axe antes de desplegar.');
 if (!/actions\/configure-pages@v6/.test(workflow) || /static_site_generator:\s*custom/.test(workflow)) {
   failures.push('GitHub Pages debe usar configure-pages v6 sin el generador custom no compatible.');
 }
@@ -223,6 +236,12 @@ if (await access(join(root, 'public')).then(() => true).catch(() => false)) {
 
 
 const accessibilityHtml = await readFile(join(root, 'index.html'), 'utf8');
+const cssOrder = ['app.css','editor.css','dialogs.css','security-panels.css','correspondence.css','accessibility.css','recovery.css'];
+const cssPositions = cssOrder.map(file => accessibilityHtml.indexOf(`./assets/css/${file}`));
+if (cssPositions.some(position => position < 0) || cssPositions.some((position, index) => index > 0 && position <= cssPositions[index - 1])) {
+  failures.push('Las hojas CSS modulares deben cargarse en orden de cascada estable.');
+}
+
 const accessibilityView = await readFile(join(root, 'assets/js/views/app-view.js'), 'utf8');
 const accessibilityController = await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8');
 const accessibilityDom = await readFile(join(root, 'assets/js/utils/dom.js'), 'utf8');
@@ -241,12 +260,40 @@ if (!/class="skip-link" href="#main-content"/.test(accessibilityView)
   || !/closeButton\?\.focus/.test(accessibilityController)) {
   failures.push('Falta el enlace de salto, el foco de página o la gestión accesible del menú móvil.');
 }
-const accessibilityCss = await readFile(join(root, 'assets/css/app.css'), 'utf8');
+const accessibilityCss = await readFile(join(root, 'assets/css/accessibility.css'), 'utf8');
 if (!/@media \(pointer: coarse\)[\s\S]*?min-height: 44px/.test(accessibilityCss)
   || !/@media \(prefers-reduced-motion: reduce\)/.test(accessibilityCss)) {
   failures.push('Los controles táctiles deben tener tamaño mínimo y respetar movimiento reducido.');
 }
+const backupScript = await readFile(join(root, 'scripts/backup/create-backup.sh'), 'utf8');
+const restoreScript = await readFile(join(root, 'scripts/backup/restore-to-isolated.sh'), 'utf8');
+const backupWorkflow = await readFile(join(root, '.github/workflows/backup-database.yml'), 'utf8');
+const recoveryMigration = await readFile(join(root, 'supabase/migrations/20261121200000_recovery_code_bundles.sql'), 'utf8');
+const recoveryApi = await readFile(join(root, 'supabase/functions/auth-api/index.ts'), 'utf8');
+if (!/supabase db dump --db-url/.test(backupScript) || !/age -r/.test(backupScript)
+  || !/aws s3 cp/.test(backupScript) || !/sha256sum/.test(backupScript)
+  || !/rowCounts/.test(backupScript) || !/monthly/.test(backupScript)
+  || /upload-artifact/.test(backupWorkflow)) {
+  failures.push('El flujo de backup debe exportar, cifrar, comprobar checksum y subir solo ciphertext al bucket externo.');
+}
+if (!/sha256sum/.test(restoreScript) || !/archive_members/.test(restoreScript)
+  || !/production_ref='tiqbmuubpbmxqvtkcdhq'/.test(restoreScript)
+  || !/NR_RESTORE_EXPECTED_COUNTS/.test(restoreScript) || !/--single-transaction/.test(restoreScript)) {
+  failures.push('El procedimiento de restauración no protege producción o no valida checksum, archivos y recuentos.');
+}
+if (!/register_app_user_with_invite_idempotent_bundle/.test(recoveryMigration)
+  || !/jsonb_array_length\(p_code_hashes\) <> 10/.test(recoveryMigration)
+  || !/recovery_codes_issued', 10/.test(recoveryMigration)
+  || !/register_app_user_with_invite_idempotent_bundle/.test(recoveryApi)
+  || !/body\.recoveryCodes/.test(recoveryApi)) {
+  failures.push('El registro de cuentas nuevas debe emitir diez códigos de recuperación y guardar solo sus hashes.');
+}
 const readme = await readFile(join(root, 'README.md'), 'utf8');
+const licenseText = await readFile(join(root, 'LICENSE'), 'utf8');
+if (/License-MIT|license MIT/i.test(readme) || !/All rights reserved/i.test(licenseText)
+  || !/repositorio puede ser visible públicamente/i.test(licenseText)) {
+  failures.push('La licencia y el README deben reflejar derechos reservados sin insignia MIT.');
+}
 const baseline = await readFile(join(root, 'docs/REMOTE_BASELINE.md'), 'utf8');
 const zipScript = await readFile(join(root, 'scripts/package-zip.mjs'), 'utf8');
 if (!/auth-api[^\n]{0,100}v11|auth-api[^\n]{0,100}versión 11/i.test(readme)

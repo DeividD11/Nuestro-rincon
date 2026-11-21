@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -90,7 +91,7 @@ test('se puede purgar una respuesta aunque su carta padre ya esté purgada', asy
 });
 
 test('conversation-item y sus botones tienen estados claros en temas claro y oscuro', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /\.conversation-item\{[^}]*background:var\(--paper-2\)/);
   assert.match(css, /\.conversation-item \.btn-ghost,\.btn-ghost\{[^}]*border:1px solid/);
   assert.match(css, /html\[data-theme="dark"\] \.conversation-item/);
@@ -156,7 +157,7 @@ test('favoritos y archivo actualizan la interfaz antes de esperar al servidor', 
 });
 
 test('las secciones comparten una escala de tipografía, superficies, controles y movimiento', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /--nr-title-size/);
   assert.match(css, /--nr-section-size/);
   assert.match(css, /--nr-card-padding/);

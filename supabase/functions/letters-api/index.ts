@@ -1,6 +1,6 @@
 import {
   corsHeaders, dbRequest, errorStatus, jsonResponse, nowIso, patchRows,
-  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectPageRows, selectRows
+  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectCursorPageRows, selectRows
 } from '../_shared/core.ts';
 
 const LETTER_FIELDS = 'id,thread_id,sender_id,recipient_id,reply_to_letter_id,title,body,status,revision,created_at,updated_at,sent_at,content_purged_at,creation_request_id';
@@ -28,6 +28,14 @@ type ListLettersRpcResult = {
   limit: number;
   hasMore: boolean;
   nextOffset: number;
+};
+type LetterPageCursor = { sortAt: string; id: string };
+type CursorLettersRpcResult = {
+  items: ListLetterRpcEntry[];
+  limit: number;
+  hasMore: boolean;
+  nextCursor: LetterPageCursor | null;
+  loaded: number;
 };
 type RenameProfileRpcResult = {
   status: 'updated' | 'not_found' | 'invalid_input';
@@ -204,6 +212,40 @@ async function fetchLetterList(userId: string, folder: string, search: string, o
     limit: page.limit, hasMore: page.hasMore, nextOffset: page.nextOffset
   };
 }
+async function fetchLetterListCursor(userId: string, folder: string, search: string, cursor: LetterPageCursor | null, limit = 40) {
+  const raw = await rpc<unknown>('list_user_letters_cursor', {
+    p_user_id: userId,
+    p_folder: folder,
+    p_search: search.trim().slice(0, 120),
+    p_cursor_sort_at: cursor?.sortAt ?? null,
+    p_cursor_id: cursor?.id ?? null,
+    p_limit: limit
+  });
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('LETTER_CURSOR_RESPONSE_INVALID');
+  const page = raw as CursorLettersRpcResult;
+  if (!Array.isArray(page.items) || typeof page.hasMore !== 'boolean'
+    || !Number.isInteger(page.limit) || page.limit < 1 || page.limit > 100
+    || (page.nextCursor !== null && (!page.nextCursor || typeof page.nextCursor.sortAt !== 'string'
+      || !Number.isFinite(Date.parse(page.nextCursor.sortAt)) || !/^[0-9a-f-]{36}$/i.test(page.nextCursor.id)))) {
+    throw new Error('LETTER_CURSOR_RESPONSE_INVALID');
+  }
+  const rows = page.items.map(entry => entry.letter);
+  if (!rows.length) return { items: [], limit: page.limit, hasMore: false, nextCursor: null, loaded: 0 };
+  const states = new Map(page.items.map(entry => [String(entry.letter.id), entry.state]));
+  const recipientStates = new Map(page.items
+    .filter(entry => typeof entry.recipient_read_at === 'string')
+    .map(entry => [String(entry.letter.id), { read_at: entry.recipient_read_at }]));
+  const names = await getNames(rows.flatMap(row => [
+    String(row.sender_id), row.recipient_id ? String(row.recipient_id) : ''
+  ]));
+  return {
+    items: rows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id)))),
+    limit: page.limit,
+    hasMore: page.hasMore,
+    nextCursor: page.hasMore ? page.nextCursor : null,
+    loaded: rows.length
+  };
+}
 
 function stripTags(html: string) { return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '); }
 
@@ -215,32 +257,29 @@ async function checkedLetter(letterId: string, userId: string) {
   return letter;
 }
 
-async function getLetterBundle(letterId: string, userId: string, threadOffset = 0, threadLimit = 40) {
+async function getLetterBundle(letterId: string, userId: string, threadCursor: LetterPageCursor | null = null, threadLimit = 40) {
   const current = await checkedLetter(letterId, userId);
   let threadRows: Record<string,unknown>[] = [];
-  let threadTotal = 1;
   let threadHasMore = false;
-  let threadNextOffset = 1;
+  let threadNextCursor: LetterPageCursor | null = null;
   let threadLoadedOlderCount = 0;
   if (current.status === 'sent') {
-    const page = await selectPageRows<Record<string, unknown>>('letters', {
+    const page = await selectCursorPageRows<Record<string, unknown>>('letters', {
       select: LETTER_FIELDS,
       thread_id: `eq.${current.thread_id}`,
       status: 'eq.sent',
-      content_purged_at: 'is.null',
-      order: 'sent_at.desc,id.desc'
-    }, threadOffset, threadLimit);
+      content_purged_at: 'is.null'
+    }, 'sent_at', threadCursor, threadLimit);
     threadRows = page.items;
     const selectedOutsideInitialPage = !threadRows.some(row => String(row.id) === String(current.id));
     if (selectedOutsideInitialPage) threadRows.push(current);
-    if (threadOffset === 0 && selectedOutsideInitialPage) threadLoadedOlderCount = 1;
+    if (!threadCursor && selectedOutsideInitialPage) threadLoadedOlderCount = 1;
     threadRows = [...new Map(threadRows.map(row => [String(row.id), row])).values()]
       .sort((a, b) => new Date(String(a.sent_at || a.created_at)).getTime()
         - new Date(String(b.sent_at || b.created_at)).getTime()
         || String(a.id).localeCompare(String(b.id)));
-    threadTotal = page.total ?? threadRows.length;
     threadHasMore = page.hasMore;
-    threadNextOffset = page.nextOffset;
+    threadNextCursor = page.nextCursor;
   } else {
     threadRows = [current];
   }
@@ -253,7 +292,7 @@ async function getLetterBundle(letterId: string, userId: string, threadOffset = 
   const decorated = threadRows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id))));
   const letter = decorated.find(row => row.id === current.id)
     || decorate(current, states.get(String(current.id)), names, recipientStates.get(String(current.id)));
-  return { letter, thread: decorated, threadTotal, threadHasMore, threadNextOffset, threadLoadedOlderCount };
+  return { letter, thread: decorated, threadHasMore, threadNextCursor, threadLoadedOlderCount };
 }
 
 async function handleAction(action: string, body: Record<string, unknown>, session: Awaited<ReturnType<typeof requireSession>>) {
@@ -272,14 +311,18 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
     case 'list': {
       const folder = String(body.folder || 'inbox');
       if (!['inbox','sent','drafts','favorites','archive','trash'].includes(folder)) throw new Error('INVALID_INPUT');
-      const offset = safePageNumber(body.offset, 0, 10_000_000);
+      const cursorValue = body.cursor;
+      const cursor = cursorValue == null ? null : cursorValue as LetterPageCursor;
+      if (cursor && (!Number.isFinite(Date.parse(String(cursor.sortAt || ''))) || !/^[0-9a-f-]{36}$/i.test(String(cursor.id || '')))) throw new Error('INVALID_INPUT');
       const limit = Math.min(100, Math.max(1, safePageNumber(body.limit, 40, 100)));
-      return fetchLetterList(userId, folder, String(body.search || '').slice(0, 120), offset, limit);
+      return fetchLetterListCursor(userId, folder, String(body.search || '').slice(0, 120), cursor, limit);
     }
     case 'get': {
-      const offset = safePageNumber(body.threadOffset, 0, 10_000_000);
+      const cursorValue = body.threadCursor;
+      const cursor = cursorValue == null ? null : cursorValue as LetterPageCursor;
+      if (cursor && (!Number.isFinite(Date.parse(String(cursor.sortAt || ''))) || !/^[0-9a-f-]{36}$/i.test(String(cursor.id || '')))) throw new Error('INVALID_INPUT');
       const limit = Math.min(100, Math.max(1, safePageNumber(body.threadLimit, 40, 100)));
-      return getLetterBundle(String(body.letterId || ''), userId, offset, limit);
+      return getLetterBundle(String(body.letterId || ''), userId, cursor, limit);
     }
     case 'draft:create': {
       const title = String(body.title || '').slice(0, 180);
@@ -357,12 +400,14 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       return rpc('confirm_letter_permanent_deletion', { p_user_id: userId, p_letter_id: letter.id });
     }
     case 'notifications': {
-      const offset = safePageNumber(body.offset, 0, 10_000_000);
+      const cursorValue = body.cursor;
+      const cursor = cursorValue == null ? null : cursorValue as LetterPageCursor;
+      if (cursor && (!Number.isFinite(Date.parse(String(cursor.sortAt || ''))) || !/^[0-9a-f-]{36}$/i.test(String(cursor.id || '')))) throw new Error('INVALID_INPUT');
       const limit = Math.min(100, Math.max(1, safePageNumber(body.limit, 30, 100)));
-      const page = await selectPageRows<Record<string, unknown>>('notifications', {
+      const page = await selectCursorPageRows<Record<string, unknown>>('notifications', {
         select: 'id,user_id,letter_id,actor_user_id,notification_type,created_at,read_at,metadata',
-        user_id: `eq.${userId}`, order: 'created_at.desc,id.desc'
-      }, offset, limit);
+        user_id: `eq.${userId}`
+      }, 'created_at', cursor, limit);
       const items = page.items;
       const [names, letters] = await Promise.all([
         getNames(items.map(item => String(item.actor_user_id || ''))),
@@ -377,8 +422,8 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
             : item.notification_type === 'letter_read' ? 'leyó tu carta' : 'te escribió una carta';
           return { ...item, message: `${actor} ${verb}: “${titleMap.get(String(item.letter_id)) || 'una carta'}”` };
         }),
-        total: page.total ?? items.length, offset: page.offset, limit: page.limit,
-        hasMore: page.hasMore, nextOffset: page.nextOffset
+        limit: page.limit, hasMore: page.hasMore, nextCursor: page.nextCursor,
+        loaded: items.length
       };
     }
     case 'notification:read': {

@@ -1,6 +1,6 @@
 # Estado del proyecto Supabase
 
-Proyecto inspeccionado y actualizado el 19 de noviembre de 2026 mediante la conexión de administración Supabase.
+Baseline histórico iniciado el 19 de noviembre de 2026 y contrastado de nuevo mediante lectura de solo consulta el 21 de noviembre de 2026.
 
 ## Proyecto
 
@@ -23,7 +23,7 @@ Las dos funciones validan la sesión propia en el cuerpo del backend. `verify_jw
 
 ## Migraciones remotas
 
-El historial remoto consultado tenía 23 entradas en la última inspección; los dos archivos SQL nuevos que incluye esta distribución aún no forman parte del historial remoto confirmado. Las últimas registradas son:
+El historial remoto consultado tenía 23 entradas en la lectura del 21 de noviembre; las cinco propuestas SQL locales no aparecen en el ledger remoto confirmado. Las últimas registradas son:
 
 - `20261116045159_lock_down_direct_data_api`
 - `20261116045242_self_service_accounts_and_email_recovery` (histórica; las rutas de email fueron sustituidas por registro sin email/código de recuperación)
@@ -194,7 +194,7 @@ El código TypeScript define contratos explícitos y validadores en tiempo de ej
 
 La arquitectura E2EE se documenta en `docs/E2EE_ARCHITECTURE.md`. No se implementa criptografía parcial ni se cambia el almacenamiento de las cartas en esta versión: el contenido sigue en claro y el documento describe las claves, sobres, respaldo, recuperación, límites de búsqueda y migración histórica que deben resolverse antes de activar E2EE.
 
-El paquete local contiene 22 SQL: 15 que coinciden con entradas remotas, tres archivos heredados/no canónicos y cuatro migraciones propuestas pendientes (`20261119064344`, `20261119090000`, `20261120173200`, `20261120235900`). En el último inventario consultado, producción sigue con 23 migraciones, `auth-api` v11 ACTIVE y `letters-api` v8 ACTIVE. No se aplicó SQL, no se desplegaron Edge Functions y no se modificaron cuentas ni invitaciones. La prueba pgTAP se amplió a 14 aserciones, incluida la transición de una cuenta a `disabled`, pero todavía requiere ejecución en una branch aislada.
+El paquete v20 contiene 23 SQL: 15 que coinciden con entradas remotas, tres archivos heredados/no canónicos y cinco propuestas locales (`20261119064344`, `20261119090000`, `20261120173200`, `20261120235900` y `20261121200000`). Producción sigue con 23 migraciones, `auth-api` v11 ACTIVE y `letters-api` v8 ACTIVE. Las ocho RPC/estructuras declaradas por las primeras cuatro propuestas ya estaban presentes en el esquema real, aunque sus timestamps no aparecen en el ledger; la quinta propuesta crea recibos y el nuevo RPC de registro con diez códigos y sigue pendiente. No se aplicó SQL ni se desplegaron Edge Functions durante esta revisión.
 
 
 ## Modularización de controladores y perfil transaccional (20 de noviembre de 2026)
@@ -229,8 +229,37 @@ La inspección de los objetos del esquema detectó que algunas estructuras inclu
 
 Sin embargo, el código remoto de las funciones no está sincronizado con el código local del ZIP: `auth-api` v11 continúa llamando a `start_app_login_attempt`, mientras el código local usa `start_app_auth_attempt`; `letters-api` v8 sigue actualizando `app_users` y `user_profiles` con dos peticiones separadas en `profile:rename`, y no llama a `rename_app_profile` ni a `list_user_letters`. Por tanto, la base contiene algunas funciones y estructuras más recientes que las versiones de Edge Functions activas, mientras el registro de migraciones no contiene las cuatro versiones locales que parecen describirlas.
 
-Esta diferencia debe tratarse como **deriva entre esquema real, historial de migraciones y código desplegado**, no como prueba de que las migraciones faltan por completo. No ejecutar `supabase db push --remote`, no aplicar las cuatro migraciones a ciegas y no desplegar las Edge Functions locales todavía. Primero se deben comparar las definiciones completas y los permisos (`EXECUTE`, ownership y grants) de cada RPC remota con los archivos SQL locales; comprobar el estado de los triggers e índices; preparar una restauración de respaldo; y reproducir la secuencia en un proyecto o branch aislado. La historia puede necesitar una reconciliación controlada de migraciones, sin volver a ejecutar DDL que ya exista.
+Esta diferencia debe tratarse como **deriva entre esquema real, historial de migraciones y código desplegado**, no como prueba de que las migraciones faltan por completo. No ejecutar `supabase db push --remote`, no aplicar las cinco migraciones propuestas a ciegas y no desplegar las Edge Functions locales todavía. Primero se deben comparar las definiciones completas y los permisos (`EXECUTE`, ownership y grants) de cada RPC remota con los archivos SQL locales; comprobar el estado de los triggers e índices; preparar una restauración de respaldo; y reproducir la secuencia en un proyecto o branch aislado. La historia puede necesitar una reconciliación controlada de migraciones, sin volver a ejecutar DDL que ya exista.
 
 El ZIP revisado conserva `.git/` y los cambios locales no comprometidos (24 archivos modificados y 41 archivos nuevos respecto al único commit `5a071371cde5dcc22a5bbfa675f3c2e98ca54560` incluido). La distribución limpia debe generarse con `npm run package:zip`; para sincronizar GitHub se debe primero confirmar el snapshot fuente completo, revisar los cambios y secretos, y enviar un commit o pull request desde una copia Git coherente. Este paquete no se ha empujado a `main` y no se ha actualizado GitHub desde esta revisión.
 
 El cifrado E2EE permanece **solo como propuesta** en `docs/E2EE_ARCHITECTURE.md`. No se han creado claves criptográficas, ciphertext ni migración del texto histórico. La aplicación continúa transmitiendo y almacenando el contenido conforme al modelo actual; no debe presentarse como E2EE ni utilizarse bajo esa expectativa de privacidad.
+
+
+## Códigos de respaldo múltiples (21 de noviembre de 2026)
+
+El paquete local incorpora `20261121200000_recovery_code_bundles.sql`. Esta migración **no está aplicada** en producción y `auth-api` continúa desplegada en v11. El código local prepara diez códigos de respaldo para registros nuevos y rotaciones, conserva únicamente hashes en PostgreSQL y hace que la recuperación consuma el conjunto completo para evitar reutilización. La tabla/función nueva y el endpoint `recovery-codes:rotate` requieren validación conjunta en una branch de Supabase antes de desplegar. Las cuentas existentes mantienen el código legado hasta que roten el conjunto; no se invalida ningún código existente en producción por este paquete.
+
+El plan de la organización observado durante esta revisión es Free. Supabase no incluye respaldos automáticos diarios en ese plan. El workflow local `backup-database.yml` prepara volcados lógicos `roles/schema/data`, cifrado `age` y carga a almacenamiento S3-compatible, pero no se ejecutará correctamente hasta configurar las credenciales del Environment `database-backups`. No se creó bucket, no se exportaron datos de producción y no se realizó restauración.
+
+
+## Copias de seguridad y recuperación (21 de noviembre de 2026)
+
+La organización Supabase conectada figura en el plan Free, que no incluye respaldos diarios administrados. El proyecto incorpora ahora un workflow diario que exporta roles, esquema y datos de `public`, cifra el paquete con `age` y lo envía a un bucket S3-compatible privado. El workflow no se encuentra operativo hasta que se creen/configuren el bucket, la identidad `age` y los secretos/variables de GitHub. No se ha generado una copia real ni se ha realizado una restauración. La herramienta de restauración rechaza explícitamente el ref de producción, exige un destino aislado vacío, verifica SHA-256, valida el manifiesto y compara seis recuentos de tablas. Los objetos de Storage API, variables de Edge Functions y el historial interno de migraciones no forman parte del dump lógico.
+
+La migración local `20261121200000_recovery_code_bundles.sql` habilita diez códigos de recuperación independientes por cuenta y el RPC transaccional de registro que inserta sus hashes. El backend remoto `auth-api` v11 no se ha actualizado para invocar ese RPC. La activación requiere ejecutar y revisar la migración en una branch aislada y desplegar `auth-api` compatible en el mismo release. No se ha consumido la invitación de producción ni se han modificado los usuarios existentes.
+
+
+## Actualización local v21: accesibilidad, CI reproducible y cursor keyset (21 de noviembre de 2026)
+
+La revisión continúa partiendo de la misma referencia remota: 23 migraciones, `auth-api` v11 ACTIVE y `letters-api` v8 ACTIVE. El ZIP local contiene 24 archivos SQL: 15 coinciden con el ledger observado, tres son heredados/no canónicos y seis propuestas locales no aparecen en el ledger. La nueva propuesta `20261121210000_cursor_based_letter_pagination.sql` añade `list_user_letters_cursor`; no se aplicó en producción ni se desplegó la Edge Function local que la invoca. El total remoto y las versiones de las funciones permanecen sin cambios durante esta entrega.
+
+Las carpetas utilizan cursor keyset `(sort_at, id)` descendente y solicitan `limit + 1` filas para saber si existe otra página, en lugar de ejecutar `OFFSET` y `COUNT(*)` exacto por cada página. Hilos y notificaciones usan también cursor por fecha+UUID. El recuento exacto legado se conserva solamente para los agregados del dashboard. La búsqueda de título y contenido sigue siendo substring sobre HTML normalizado en la función; el cursor reduce el coste de paginar, pero no hace que la búsqueda sea automáticamente indexada. Antes de incorporar índices trigram o full-text se deben medir planes `EXPLAIN (ANALYZE, BUFFERS)` en una branch aislada y con volumen representativo.
+
+El pie del editor se mantiene dentro de `.editor-shell`; sus reglas están aisladas en `assets/css/editor.css`, con columnas adaptativas y wrapping. Las reglas de foco visible residen en `assets/css/accessibility.css`. La auditoría estática calcula 22 combinaciones seleccionadas de contraste en ambos temas. La suite Playwright `tests/e2e/accessibility.spec.mjs` ejecuta axe-core para siete vistas y dos temas, además de comprobar la geometría del pie del editor en cinco anchos. Las pruebas automáticas están incluidas en el workflow de Pages, pero no se ejecutaron localmente en esta sesión porque no se instalaron las dependencias del lockfile ni Chromium/axe-core; las pruebas manuales de NVDA, VoiceOver y TalkBack siguen pendientes.
+
+La persistencia local del editor se movió de `DraftController` a `assets/js/services/draft-persistence-service.js`; el controlador conserva la coordinación de guardados, acciones y cola. `draft-controller.js` queda en 286 líneas y el servicio de persistencia en 109. El `AppController` de este snapshot tiene 863 líneas y todavía concentra listeners/dispatch compartidos; no se afirma que la modularización esté terminada.
+
+El pipeline `pages.yml` usa `npm ci`, la auditoría de contraste y la suite Playwright/axe antes de subir un artefacto. `.nvmrc` fija Node 24.22.3; `package.json` y `package-lock.json` fijan npm 11.19.1, Playwright 1.65.1 y axe-core 4.14.1. Se añadió Dependabot para revisar semanalmente actualizaciones de npm y GitHub Actions. Los workflows de pgTAP, integración de dos cuentas y UI contra Supabase permanecen como ejecuciones manuales sobre secretos de entorno aislado; deben completarse antes de cualquier release que modifique SQL o funciones.
+
+La exportación de esquema y el flujo de respaldo se corrigieron para usar `supabase db dump --db-url <URL>` en lugar de tratar `--remote` como si fuera una URL. No se generó un `remote-public.sql`, no se ejecutaron respaldos ni restauraciones reales, no se aplicó la migración cursor y no se actualizaron funciones de producción.

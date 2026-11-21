@@ -153,58 +153,43 @@ export function selectRows<T = Record<string, unknown>>(table: string, params: R
   return dbRequest<T[]>(`${table}?${new URLSearchParams(params).toString()}`);
 }
 
-export type PageRows<T> = {
-  items: T[];
-  total: number | null;
-  offset: number;
-  limit: number;
-  hasMore: boolean;
-  nextOffset: number;
-};
+/** Las listas de carpetas, hilos y notificaciones usan cursor keyset. */
+export type PageCursor = { sortAt: string; id: string };
+export type CursorPageRows<T> = { items: T[]; hasMore: boolean; nextCursor: PageCursor | null; limit: number };
 
-/** Consulta paginada PostgREST con recuento exacto y ordenación definida por el llamador. */
-export async function selectPageRows<T = Record<string, unknown>>(
+/** Paginación por cursor (keyset) sin COUNT exacto ni Range/OFFSET. El orden
+ * compuesto fecha+UUID impide saltos cuando varias filas comparten timestamp. */
+export async function selectCursorPageRows<T = Record<string, unknown>>(
   table: string,
   params: Record<string, string>,
-  offset: number,
+  sortColumn: 'created_at' | 'sent_at',
+  cursor: PageCursor | null,
   limit: number
-): Promise<PageRows<T>> {
-  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new Error('PAGINATION_INPUT_INVALID');
+): Promise<CursorPageRows<T>> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('PAGINATION_INPUT_INVALID');
+  if (cursor && (!Number.isFinite(Date.parse(cursor.sortAt)) || !/^[0-9a-f-]{36}$/i.test(cursor.id))) {
+    throw new Error('PAGINATION_CURSOR_INVALID');
   }
   const queryParams = new URLSearchParams(params);
-  queryParams.delete('limit');
   queryParams.delete('offset');
-  const headers = dbHeaders({
-    Range: `${offset}-${offset + limit - 1}`,
-    'Range-Unit': 'items',
-    Prefer: 'count=exact'
-  });
-  headers.set('Cache-Control', 'no-store');
-  const response = await fetch(supabaseUrl(`${table}?${queryParams.toString()}`), {
-    method: 'GET', headers, cache: 'no-store'
-  });
-  const raw = await response.text();
-  let parsed: unknown = null;
-  try { parsed = raw ? JSON.parse(raw) : []; } catch { parsed = raw; }
-  if (!response.ok) {
-    const message = typeof parsed === 'object' && parsed && 'message' in parsed
-      ? String((parsed as Record<string, unknown>).message)
-      : 'Database operation failed';
-    throw new Error(`DATABASE_${response.status}:${message}`);
+  queryParams.set('limit', String(limit + 1));
+  queryParams.set('order', `${sortColumn}.desc,id.desc`);
+  if (cursor) {
+    queryParams.set('or', `(${sortColumn}.lt.${cursor.sortAt},and(${sortColumn}.eq.${cursor.sortAt},id.lt.${cursor.id}))`);
+  } else {
+    queryParams.delete('or');
   }
-  if (!Array.isArray(parsed)) throw new Error('DATABASE_PAGE_RESPONSE_INVALID');
-  const contentRange = response.headers.get('Content-Range') || '';
-  const totalPart = contentRange.split('/').at(-1) || '';
-  const parsedTotal = totalPart === '*' ? NaN : Number(totalPart);
-  const total = Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null;
-  const items = parsed as T[];
-  const nextOffset = offset + items.length;
-  return {
-    items, total, offset, limit,
-    hasMore: total === null ? items.length === limit : nextOffset < total,
-    nextOffset
-  };
+  const rows = await dbRequest<T[]>(`${table}?${queryParams.toString()}`);
+  if (!Array.isArray(rows)) throw new Error('DATABASE_PAGE_RESPONSE_INVALID');
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  const last = items.at(-1) as (Record<string, unknown> | undefined);
+  const sortAt = last?.[sortColumn];
+  const id = last?.id;
+  const nextCursor = last && typeof sortAt === 'string' && typeof id === 'string'
+    ? { sortAt, id }
+    : null;
+  return { items, hasMore, nextCursor, limit };
 }
 
 export async function selectOne<T = Record<string, unknown>>(table: string, params: Record<string, string>): Promise<T | null> {
@@ -373,11 +358,12 @@ export function errorStatus(error: unknown): { status: number; code: string; mes
     || code === 'REGISTRATION_REQUEST_ID_INVALID' || code === 'ACCOUNT_EXISTS'
     || code === 'ACCOUNT_LIMIT_REACHED' || code === 'INVITATION_INVALID'
     || code === 'INVITATION_ALREADY_PENDING' || code === 'INVITATION_BOOTSTRAP_REQUIRED'
-    || code === 'RECOVERY_ROTATION_CONFLICT' || code === 'RECOVERY_ROTATION_SUPERSEDED') {
+    || code === 'RECOVERY_ROTATION_CONFLICT' || code === 'RECOVERY_ROTATION_SUPERSEDED'
+    || code === 'RECOVERY_BUNDLE_CONFLICT' || code === 'RECOVERY_BUNDLE_SUPERSEDED') {
     return { status: 409, code, message: 'La operación ya no puede continuar con los datos de este intento. Revisa la invitación, la cuenta o vuelve a iniciar la operación.' };
   }
   if (code === 'REGISTRATION_RECOVERY_HANDOFF_INVALID' || code === 'RECOVERY_ROTATION_INVALID'
-    || code === 'CURRENT_PASSWORD_INVALID') {
+    || code === 'RECOVERY_BUNDLE_INVALID' || code === 'CURRENT_PASSWORD_INVALID') {
     return { status: 400, code, message: 'Los datos de seguridad no son válidos. Comprueba la contraseña y vuelve a intentarlo.' };
   }
   if (code === 'INVALID_BODY' || code === 'INVALID_INPUT') {

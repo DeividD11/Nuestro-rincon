@@ -12,15 +12,19 @@ Reducir el acoplamiento del controlador de entrada sin crear instancias paralela
 | `auth-controller.js` | Traspaso seguro del código de recuperación, continuidad de registro/rotación, recuperación pendiente y cierre forzado de sesión |
 | `navigation-controller.js` | Resolución de rutas, precarga, caché de rutas, renderizado, paginación de carpetas, notificaciones y carga de mensajes anteriores |
 | `letter-controller.js` | Caché de hilos, apertura inmediata de cartas, marcado de lectura en segundo plano, edición, respuestas, envío, formato, vista previa y descargas |
-| `draft-controller.js` | Validación de cuerpo, recuperación local, copias de emergencia, autoguardado, cola de sincronización y descarte de borradores |
+| `draft-controller.js` | Edición, validación de cuerpo, coordinación del autoguardado, cola de sincronización y descarte de borradores |
 | `settings-controller.js` | Preferencias, temas, sesiones de dispositivos, verificación y renovación de la sesión propia |
 | `notification-controller.js` | Lectura y sincronización de la bandeja de notificaciones |
 
 Los módulos son clases sin constructor y no poseen estado duplicado. Sus métodos se instalan en `AppController.prototype` usando `Object.getOwnPropertyDescriptors`; esto es necesario porque los métodos de clase son no enumerables y un `Object.assign` simple no los copiaría. La prueba `controller-modularization.test.mjs` importa el controlador real y comprueba que los métodos compuestos están disponibles.
 
-El controlador principal pasó de 2.162 líneas en la base local v16 a unas 738 líneas en esta distribución. La mayor parte del código de navegación, borradores, lectura/envío, configuración y notificaciones ahora vive en sus módulos correspondientes. La coordinación de eventos permanece en `AppController` para conservar una única entrada a la aplicación.
+En este snapshot, `app-controller.js` tiene 863 líneas; conserva el estado compartido, los listeners generales, el dispatch de acciones y el montaje de módulos. `draft-controller.js` se redujo a 286 líneas. La persistencia local se extrajo a `assets/js/services/draft-persistence-service.js` (109 líneas), que centraliza copias de emergencia, lectura/restauración de IndexedDB, hidratación del editor y persistencia al salir. La sincronización remota permanece en su servicio/cola independiente. La modularización es progresiva: no se considera terminado el controlador principal.
 
 ## Servicios independientes
+
+### `DraftPersistenceService`
+
+`draft-persistence-service.js` recibe el contexto compartido de `AppController` y ejecuta operaciones de persistencia sin crear una segunda instancia de estado. Expone funciones para guardar/leer la copia de emergencia, recuperar IndexedDB, hidratar el editor y persistir al salir. `DraftController` conserva la coordinación de acciones y delega esas responsabilidades.
 
 ### `DraftSyncQueue`
 
@@ -54,6 +58,8 @@ La migración `20261120235900_transactional_profile_rename.sql` es local y está
 - `npm run check`: comprueba estructura, sintaxis ES Modules, imports locales y contratos estáticos.
 - `npm test`: incluye pruebas del descriptor composition, serialización de la cola, visibilidad/actividad/backoff del poller y uso del RPC de perfil.
 - `npm run build:pages`: genera la web estática para GitHub Pages.
+- `npm run check:contrast`: revisa 22 pares de color seleccionados en ambos temas.
+- `npm run test:a11y`: ejecuta axe-core y geometría del pie del editor en Chromium, después de `npm ci` y de instalar Chromium.
 - `npm run check:edge`: ejecuta `deno check` en el workflow de GitHub Actions; el entorno local que produjo este paquete no tenía Deno instalado, así que se ejecutó además una comprobación estricta equivalente con `tsc` sobre las Edge Functions.
 
 Estas pruebas no sustituyen una prueba con dos sesiones reales ni la aplicación de la migración sobre una branch aislada de Supabase.

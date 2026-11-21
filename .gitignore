@@ -11,3 +11,11 @@ test-results/
 *.tsbuildinfo
 _site/
 dist/
+
+# Backups and recovery bundles: never commit user correspondence or key material.
+backups/
+backup-output/
+*.age
+*.tar.gz.age
+*.dump
+*.backup

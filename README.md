@@ -7,7 +7,7 @@
     <img src="https://img.shields.io/badge/Frontend-HTML%20%7C%20CSS%20%7C%20JavaScript-E9D8CA?logo=html5&logoColor=4A332B" alt="Frontend HTML CSS JavaScript">
     <img src="https://img.shields.io/badge/Backend-Supabase%20Edge%20Functions-3ECF8E?logo=supabase&logoColor=123C31" alt="Backend Supabase Edge Functions">
     <img src="https://img.shields.io/badge/Hosting-GitHub%20Pages-222222?logo=githubpages&logoColor=white" alt="GitHub Pages">
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-8B5B4D.svg" alt="MIT License"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-All%20rights%20reserved-8B5B4D.svg" alt="All rights reserved"></a>
   </p>
   <p>
     <a href="https://deividd11.github.io/Nuestro-rincon/">Abrir aplicación</a>
@@ -31,7 +31,7 @@ El proyecto combina una interfaz estática —publicable directamente en **GitHu
 Su arquitectura mantiene separados los modelos, las vistas, los controladores, los repositorios y los servicios. Las operaciones privadas se realizan en Supabase Edge Functions; el navegador no recibe credenciales privilegiadas ni decide por sí mismo la identidad con la que se ejecuta una operación.
 
 > [!IMPORTANT]
-> La versión incluida está preparada para continuar trabajando con el proyecto Supabase existente. La lectura remota del 21 de noviembre de 2026 confirma 23 migraciones registradas, `auth-api` v11 y `letters-api` v8. El ZIP contiene 22 archivos SQL: 15 coinciden con el ledger, tres son heredados/no canónicos y cuatro no aparecen en el ledger. Sin embargo, las ocho RPC declaradas por esos cuatro scripts ya existen en el esquema remoto y sus permisos están limitados a `service_role`; las funciones Edge activas siguen siendo versiones anteriores. **No ejecutes las migraciones ni despliegues las funciones a ciegas**: compara las definiciones y sigue [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md). Este paquete no es una restauración integral de una base de datos nueva.
+> La versión incluida está preparada para continuar trabajando con el proyecto Supabase existente. La lectura remota del 21 de noviembre de 2026 confirma 23 migraciones registradas, `auth-api` v11 y `letters-api` v8. El paquete contiene 24 archivos SQL: 15 coinciden con el ledger, tres son heredados/no canónicos y seis son propuestas locales que no aparecen en el ledger. Las primeras cuatro propuestas describen ocho funciones/estructuras que ya estaban presentes en el esquema remoto; `20261121200000_recovery_code_bundles.sql` añade el recibo del conjunto de códigos y el RPC de registro con diez códigos; `20261121210000_cursor_based_letter_pagination.sql` añade la RPC keyset para carpetas. Ambas siguen pendientes de producción. Las Edge Functions activas todavía son versiones anteriores. **No ejecutes las migraciones ni despliegues las funciones a ciegas**: compara las definiciones y sigue [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md). Este paquete no es una restauración integral de una base de datos nueva.
 
 <details>
   <summary><strong>Contenido de esta documentación</strong></summary>
@@ -93,10 +93,10 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 - Gestión y revocación de sesiones/dispositivos.
 - Renovación de sesión y control de expiración.
 - Cambio de nombre visible, nombre de usuario, correo informativo y contraseña.
-- Recuperación de contraseña mediante un código personal de un solo uso.
+- Recuperación de contraseña mediante diez códigos de respaldo independientes de un solo uso, entregados durante el registro; las cuentas antiguas pueden generar el conjunto desde Configuración → Seguridad.
 - Registro idempotente: si se pierde la respuesta después de crear la cuenta, el mismo intento puede reanudarse con los mismos datos y la contraseña original sin consumir otra invitación; los reintentos también quedan sujetos al límite de intentos.
-- El código de recuperación se genera antes de enviar el registro, se conserva temporalmente en `localStorage` (sin guardar la contraseña) y solo se elimina cuando la persona confirma que lo guardó. Si el resultado del servidor es incierto, la interfaz lo marca como pendiente y no afirma que esté activo hasta confirmar la operación.
-- Regeneración del código desde Configuración tras confirmar la contraseña actual; el código anterior se invalida transaccionalmente.
+- Los diez códigos se generan antes de enviar el registro, se conservan temporalmente en `localStorage` (sin guardar la contraseña) y solo se eliminan cuando la persona confirma que los guardó. PostgreSQL conserva únicamente sus hashes. Si el resultado del servidor es incierto, la interfaz los marca como pendientes y no afirma que estén activos hasta confirmar la operación. Al utilizar uno, los restantes se invalidan y se deben regenerar después de iniciar sesión.
+- Rotación de los diez códigos desde Configuración tras confirmar la contraseña actual; todos los códigos anteriores se invalidan transaccionalmente.
 - Registro con verificación transaccional de la invitación y límites de intentos por IP anonimizada y huella del código.
 - Eliminación de cuenta con verificación de contraseña y confirmación explícita.
 
@@ -127,7 +127,7 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 | Automatización | GitHub Actions | Verificación, pruebas y despliegue continuo |
 | Pruebas | Node.js Test Runner | Pruebas de contrato, seguridad, fiabilidad y responsive |
 
-No se utiliza un framework frontend ni se requiere instalar dependencias npm para ejecutar la aplicación o sus pruebas.
+No se utiliza un framework frontend. La aplicación desplegada sigue siendo estática y no necesita dependencias npm en producción. Para la auditoría automatizada se fijan `@playwright/test` y `axe-core` en `package-lock.json`; instala el árbol reproducible con `npm ci` antes de ejecutar Playwright/axe.
 
 ## 4. Arquitectura
 
@@ -154,14 +154,15 @@ flowchart TD
 | Vistas | `assets/js/views/` | Renderizado de interfaz y formularios |
 | Controladores | `assets/js/controllers/` | Orquestación de acciones y navegación |
 | Repositorios | `assets/js/repositories/` | Acceso a operaciones del dominio |
-| Servicios | `assets/js/services/` | API, sesiones y almacenamiento local |
+| Servicios | `assets/js/services/` | API, sesiones, almacenamiento local y persistencia/sincronización de borradores |
 | Utilidades | `assets/js/utils/` | Sanitización, diálogos, avisos y formato |
 | Backend compartido | `supabase/functions/_shared/` | Validación de sesión, CORS y utilidades de servidor |
 | Controlador principal | `assets/js/controllers/app-controller.js` | Inicialización, eventos globales, estado compartido y composición de módulos |
 | Controlador de autenticación | `assets/js/controllers/auth-controller.js` | Recuperación, continuidad de registro y cierre forzado de sesión |
 | Controlador de navegación | `assets/js/controllers/navigation-controller.js` | Rutas, caché, paginación y carga progresiva |
 | Controlador de cartas | `assets/js/controllers/letter-controller.js` | Lectura, respuesta, envío, formato y descarga |
-| Controlador de borradores | `assets/js/controllers/draft-controller.js` | Edición, autoguardado, persistencia local y sincronización |
+| Controlador de borradores | `assets/js/controllers/draft-controller.js` | Edición, cola y coordinación del autoguardado |
+| Persistencia de borradores | `assets/js/services/draft-persistence-service.js` | Copias de emergencia, recuperación e hidratación de borradores locales |
 | Controlador de configuración | `assets/js/controllers/settings-controller.js` | Preferencias, sesiones, tema y validación de sesión |
 | Controlador de notificaciones | `assets/js/controllers/notification-controller.js` | Bandeja y actualización periódica de notificaciones |
 | Cola de sincronización | `assets/js/services/draft-sync-queue.js` | Serialización de escrituras de borradores por cuenta |
@@ -185,10 +186,13 @@ El backend no confía en un `user_id` enviado por el navegador como prueba de id
 nuestro-rincon/
 ├── .github/
 │   └── workflows/
-│       └── pages.yml             # Calidad continua y despliegue de Pages
+│       ├── pages.yml             # Calidad continua y despliegue de Pages
+│       └── security-*.yml        # Pruebas aisladas de DB, integración y UI
 ├── assets/
 │   ├── css/
-│   │   └── app.css               # Sistema visual y responsive
+│   │   ├── app.css               # Base visual y layout principal
+│   │   ├── editor.css            # Editor y pie del editor
+│   │   └── accessibility.css     # Foco visible y ajustes de accesibilidad
 │   ├── icons/
 │   └── js/
 │       ├── config/               # Configuración pública del cliente
@@ -202,6 +206,8 @@ nuestro-rincon/
 │       └── theme-boot.js
 ├── docs/
 │   ├── ACCESSIBILITY.md          # Navegación por teclado, foco, contraste y lectores de pantalla
+│   ├── CI_RELEASE_POLICY.md      # Política de verificación antes de publicar
+│   ├── PAGINATION.md             # Cursores keyset y búsqueda
 │   ├── PUSH_NOTIFICATIONS_ROADMAP.md # Diseño futuro de notificaciones externas
 │   ├── CONTROLLER_ARCHITECTURE.md  # Módulos de control y actualización adaptativa
 │   ├── REMOTE_BASELINE.md        # Estado conocido del Supabase existente
@@ -221,7 +227,9 @@ nuestro-rincon/
 ├── .nojekyll
 ├── .gitignore
 ├── LICENSE
+├── .nvmrc
 ├── package.json
+├── package-lock.json
 └── README.md
 ```
 
@@ -234,7 +242,7 @@ nuestro-rincon/
 - Un navegador moderno.
 - Acceso al proyecto Supabase correspondiente para probar las operaciones remotas.
 
-No hay dependencias npm de terceros que deban instalarse para ejecutar los comandos de calidad del repositorio.
+El runtime de la aplicación no carga dependencias npm en producción. Las dependencias de desarrollo para navegador y accesibilidad están fijadas en `package-lock.json`.
 
 ## 7. Configuración del frontend
 
@@ -269,7 +277,9 @@ cd Nuestro-rincon
 Ejecuta las verificaciones:
 
 ```bash
+npm ci
 npm run check
+npm run check:contrast
 npm test
 ```
 
@@ -303,16 +313,17 @@ El repositorio incluye un workflow que verifica el proyecto, ejecuta la suite au
 
 ### Pipeline
 
-El workflow `.github/workflows/pages.yml` separa verificación y despliegue:
+El workflow `.github/workflows/pages.yml` separa verificación y despliegue. `.nvmrc` fija Node.js 24.22.3, `package.json` declara npm 11.19.1 y `package-lock.json` fija las dependencias de desarrollo; las acciones usan referencias de versión y Dependabot propone sus actualizaciones:
 
 **Job `verify`** (en `pull_request`, `push` a `main` y ejecución manual):
 
 1. Checkout del repositorio.
 2. Preparación de Node.js 24 y Deno 2.9.8 (versión fijada).
-3. `npm run check` para validar estructura, sintaxis, imports y configuración.
-4. `npm run check:edge` ejecuta `deno check` sobre `core.ts`, `auth-api` y `letters-api`.
-5. `npm test` y `npm run build:pages`.
-6. Sube el directorio `_site/` como artefacto `pages-site`.
+3. `npm ci` instala el árbol exacto desde el lockfile.
+4. `npm run check` y `npm run check:contrast` verifican estructura y 22 combinaciones de contraste de la paleta.
+5. `npm run check:edge` ejecuta `deno check` sobre `core.ts`, `auth-api` y `letters-api` con Deno 2.9.8.
+6. `npm test`, `npm run build:pages` y `npm run test:a11y` (axe-core/WCAG 2.2 A/AA en Chromium).
+7. Sube el directorio `_site/` como artefacto `pages-site`.
 
 **Job `deploy`** (solo para `main`, después de `verify`): descarga el artefacto verificado, ejecuta `actions/configure-pages@v6`, prepara el artefacto de Pages y publica mediante `actions/deploy-pages@v4`. Una pull request nunca despliega el sitio.
 
@@ -342,9 +353,9 @@ La documentación histórica registra el proyecto Supabase asociado como saludab
 - `auth-api` v11 y `letters-api` v8 en estado `ACTIVE` en la revisión del 19 de noviembre de 2026.
 - RLS activado en las tablas privadas.
 
-El paquete incluye 22 archivos SQL, pero no el historial completo de 23 migraciones remotas (15 coinciden con el historial, tres son archivos heredados/no canónicos y cuatro scripts locales no aparecen en el ledger). La inspección remota del 21 de noviembre detectó que las ocho funciones SQL declaradas por esos cuatro scripts existen ya en la base y que sus permisos están limitados a `service_role`; también existen el trigger de purga al deshabilitar una cuenta y los índices de paginación. Las Edge Functions desplegadas, sin embargo, siguen en versiones anteriores y no llaman a las RPC nuevas. Por tanto:
+El paquete incluye 24 archivos SQL, pero no el historial completo de 23 migraciones remotas (15 coinciden con el historial, tres son archivos heredados/no canónicos y seis scripts locales no aparecen en el ledger). La inspección remota del 21 de noviembre detectó que las ocho funciones SQL descritas por los cuatro primeros scripts anteriores existen ya en la base y que sus permisos están limitados a `service_role`; también existen el trigger de purga al deshabilitar una cuenta y los índices previos de paginación. `20261121200000_recovery_code_bundles.sql` añade el RPC de registro con diez códigos y `20261121210000_cursor_based_letter_pagination.sql` añade el listado keyset; ambos siguen pendientes de producción. Las Edge Functions desplegadas siguen en versiones anteriores y no llaman a las RPC más recientes. Por tanto:
 
-- No ejecutes `supabase db push --remote` ni apliques los cuatro scripts a ciegas. Compara primero las definiciones y permisos exactos; puede hacer falta reconciliar el ledger sin volver a ejecutar DDL existente.
+- No ejecutes `supabase db push --remote` ni apliques los cinco scripts locales a ciegas. Compara primero las definiciones y permisos exactos; puede hacer falta reconciliar el ledger sin volver a ejecutar DDL existente.
 - No despliegues `auth-api` o `letters-api` desde el ZIP hasta validar el conjunto completo en un entorno aislado.
 - Para publicar solo el frontend, comprueba antes que sus llamadas sean compatibles con las Edge Functions que siguen activas.
 - No uses este paquete como restauración completa de una base Supabase vacía.
@@ -363,7 +374,7 @@ El estado de referencia y las limitaciones se documentan en [`docs/REMOTE_BASELI
 - Refresh tokens rotatorios y detección de reutilización.
 - Validación de sesión e identidad en el backend.
 - Limitación de intentos de acceso y recuperación.
-- Recuperación mediante código de un solo uso almacenado como hash; regeneración autenticada con invalidación del código anterior.
+- Diez códigos de respaldo aleatorios por cuenta; PostgreSQL solo almacena hashes y consumir uno invalida el conjunto restante. La rotación exige contraseña actual y sesión activa.
 - RLS y restricciones de permisos para las tablas y RPC privadas.
 - Validación de pertenencia a cartas e hilos.
 - Sanitización del HTML de las cartas con listas permitidas.
@@ -375,7 +386,7 @@ El estado de referencia y las limitaciones se documentan en [`docs/REMOTE_BASELI
 - El código de invitación se muestra una sola vez y debe compartirse por un canal privado. Si se pierde antes de utilizarse, revoca esa invitación pendiente y genera otra. Esto no reemplaza al código personal de recuperación, que sirve para restablecer la contraseña de una cuenta ya creada.
 - En una instalación Supabase vacía, la primera invitación de bootstrap se genera manualmente desde el SQL Editor; ese procedimiento solo está autorizado para el rol PostgreSQL `postgres` y se describe en [`docs/INVITATIONS.md`](docs/INVITATIONS.md).
 - No hay CAPTCHA, segundo factor ni recuperación por correo.
-- Si se pierde el código personal de recuperación, no existe un flujo automático por email para restablecer la cuenta.
+- Si se pierden todos los códigos de respaldo y la sesión ya no está activa, no hay recuperación por correo. No se debe intentar restablecer la cuenta mediante una operación administrativa improvisada.
 - No hay notificaciones push del navegador ni entrega garantizada de avisos cuando el sitio está cerrado.
 - El contenido de las cartas se procesa en texto legible en las Edge Functions y PostgreSQL. **No existe cifrado de extremo a extremo.** La arquitectura propuesta y sus riesgos están documentados en [`docs/E2EE_ARCHITECTURE.md`](docs/E2EE_ARCHITECTURE.md); no se afirma que el cifrado esté implementado.
 - `sessionStorage` mantiene el refresh token en el origen de la aplicación y `localStorage` conserva temporalmente el código de recuperación pendiente, sin guardar la contraseña. Un XSS persistente podría comprometer una sesión o leer un código pendiente; la sanitización y la CSP forman parte de las defensas, pero no sustituyen una auditoría de seguridad.
@@ -391,6 +402,8 @@ Los comandos principales son:
 |---|---|
 | `npm run check` | Verifica archivos requeridos, sintaxis de módulos, imports, recursos locales, configuración y workflow |
 | `npm run check:edge` | Ejecuta `deno check` en `core.ts`, `auth-api` y `letters-api` para bloquear errores de tipos antes del despliegue |
+| `npm run check:contrast` | Audita 22 pares de color de la paleta clara y oscura |
+| `npm run test:a11y` | Ejecuta axe-core en Chromium para siete pantallas y ambos temas; requiere `npm ci` y Chromium |
 | `npm test` | Ejecuta las pruebas de contrato, seguridad, fiabilidad, sesiones, diseño responsive y diálogos |
 | `npm run build:pages` | Genera el sitio estático en `_site/` |
 | `npm run package:zip` | Crea el ZIP fuente sin `.git/`, `.env`, dependencias, build ni resultados locales |
@@ -398,7 +411,7 @@ Los comandos principales son:
 | `npm run test:db` | Ejecuta pruebas pgTAP de límites, eliminación compartida y actualización transaccional del perfil; bloquea producción |
 | `npm run test:e2e` | Ejecuta pruebas Playwright en escritorio y móvil; requiere cuentas de prueba |
 
-La distribución actual incorpora **113 pruebas automatizadas** de contratos, recuperación idempotente, aislamiento y regresiones del código. La suite no sustituye pruebas de integración con el backend remoto ni una inspección visual en dispositivos físicos. Antes de una publicación importante, valida al menos el registro, acceso, creación y sincronización de borradores, envío, respuesta, recuperación, Papelera, cierre de sesión y cambio de dispositivo.
+La distribución actual incorpora pruebas automatizadas de contratos, recuperación idempotente, aislamiento y regresiones del código. La auditoría axe-core se ejecuta en GitHub Actions, pero todavía requiere pruebas manuales con NVDA, VoiceOver y TalkBack; consulta `docs/ACCESSIBILITY.md`. La suite no sustituye pruebas de integración con el backend remoto ni una inspección visual en dispositivos físicos. Antes de una publicación importante, valida al menos el registro, acceso, creación y sincronización de borradores, envío, respuesta, recuperación, Papelera, cierre de sesión y cambio de dispositivo.
 
 ## 13. Solución de problemas
 
@@ -413,18 +426,22 @@ La distribución actual incorpora **113 pruebas automatizadas** de contratos, re
 
 ## 14. Documentación adicional
 
-- [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md): navegación por teclado, gestión del foco, regiones de anuncios, formularios y matriz de validación con lectores de pantalla. Las comprobaciones con NVDA, VoiceOver y TalkBack siguen pendientes de ejecución manual.
+- [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md): navegación por teclado, gestión del foco, regiones de anuncios, auditoría axe-core, paleta de contraste y matriz manual con lectores de pantalla. Las comprobaciones con NVDA, VoiceOver y TalkBack siguen pendientes de ejecución manual.
+- [`docs/CI_RELEASE_POLICY.md`](docs/CI_RELEASE_POLICY.md): verificaciones automáticas y pasos aislados obligatorios antes de publicar cambios de backend.
+- [`docs/PAGINATION.md`](docs/PAGINATION.md): cursor keyset para carpetas, hilos y notificaciones, con límites y plan de optimización de búsqueda.
 - [`docs/PUSH_NOTIFICATIONS_ROADMAP.md`](docs/PUSH_NOTIFICATIONS_ROADMAP.md): propuesta futura de Web Push, consentimiento, protección del contenido y revocación de dispositivos. Las notificaciones externas todavía no están implementadas.
 - [`docs/SECURITY.md`](docs/SECURITY.md): límites de confianza, sesiones, autenticación y controles de privacidad.
 - [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md): estado remoto conocido, migraciones y funciones desplegadas.
 - [`docs/LETTERS_CONSISTENCY.md`](docs/LETTERS_CONSISTENCY.md): semántica de carpetas, deduplicación, navegación rápida entre respuestas, borradores no vacíos, consistencia visual y eliminación compartida.
 - [`docs/E2EE_ARCHITECTURE.md`](docs/E2EE_ARCHITECTURE.md): diseño, límites, recuperación de claves y migración futura del cifrado de extremo a extremo.
 - [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md): sincronización segura de código, historial Git, migraciones y Edge Functions.
+- [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md): procedimiento de copias cifradas y restauración de prueba; requiere configurar un bucket y credenciales externas.
+- [`docs/ACCOUNT_RECOVERY.md`](docs/ACCOUNT_RECOVERY.md): diez códigos independientes, bóveda local cifrada y recuperación sin Supabase Auth.
 - [`supabase/schema/README.md`](supabase/schema/README.md): referencia del esquema disponible.
 
 ## 15. Licencia
 
-Este proyecto se distribuye bajo los términos de la licencia MIT. Consulta [`LICENSE`](LICENSE) para ver el texto completo.
+El código se publica para consulta con **Todos los derechos reservados**. La visibilidad pública del repositorio no concede una licencia para reutilizar, modificar o redistribuir el proyecto. Consulta [`LICENSE`](LICENSE) y solicita autorización expresa al titular para cualquier uso no permitido.
 
 ---
 
@@ -438,7 +455,7 @@ Este proyecto se distribuye bajo los términos de la licencia MIT. Consulta [`LI
 El paquete incorpora tres niveles de pruebas:
 
 - `npm test`: pruebas unitarias, de contrato y regresión del frontend y del código compartido.
-- `npm run test:db`: pruebas pgTAP contra una branch remota aislada; requiere `NR_TEST_CONFIRM_ISOLATED=YES`, `NR_DB_TEST_PROJECT_REF` y `NR_TEST_DATABASE_URL`. Bloquea producción.
+- `npm run test:db`: ejecuta los archivos pgTAP con `psql` contra una branch/proyecto aislado; requiere `NR_TEST_CONFIRM_ISOLATED=YES`, `NR_DB_TEST_PROJECT_REF` y `NR_TEST_DATABASE_URL`. Comprueba el plan y el resultado TAP, acepta conexión directa o Session Pooler y bloquea producción.
 - `npm run test:integration`: pruebas HTTP reales de dos cuentas contra un proyecto Supabase aislado. Estas pruebas consumen invitaciones, crean cartas y eliminan la cuenta B al validar la preservación de cartas compartidas; **no deben ejecutarse contra producción ni contra una base con datos reales**.
 - `npm run test:e2e`: pruebas Playwright en Chromium de escritorio y móvil. Requieren dos cuentas de pruebas existentes y variables `NR_E2E_*`.
 

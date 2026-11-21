@@ -18,7 +18,7 @@ for (let index = 0; index < args.length; index++) {
 }
 const output = resolve(root, outputArg);
 const excludedDirectories = new Set([
-  '.git', 'node_modules', '_site', 'dist', '.dist', 'coverage',
+  '.git', 'node_modules', '_site', 'dist', '.dist', 'coverage', 'backups', 'backup-output',
   'playwright-report', 'test-results', '.cache', '.turbo', '__pycache__'
 ]);
 const excludedNames = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
@@ -27,7 +27,8 @@ const includedEnvExamples = new Set(['.env.example', '.env.sample', '.env.templa
 function shouldExclude(name, relativePath, isDirectory) {
   if (isDirectory) return excludedDirectories.has(name);
   if (excludedNames.has(name)) return true;
-  if (name.endsWith('.zip') || name.endsWith('.log') || name.endsWith('.tsbuildinfo')) return true;
+  if (name.endsWith('.zip') || name.endsWith('.log') || name.endsWith('.tsbuildinfo')
+    || name.endsWith('.age') || name.endsWith('.dump') || name.endsWith('.backup')) return true;
   if ((name === '.env' || name.startsWith('.env.')) && !includedEnvExamples.has(name)) return true;
   if (relativePath.startsWith('dist/')) return true;
   return false;

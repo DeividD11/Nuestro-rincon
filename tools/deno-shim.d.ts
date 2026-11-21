@@ -3,5 +3,7 @@ declare namespace Deno {
   function serve(handler: (request: Request) => Response | Promise<Response>): void;
 }
 declare module 'linkedom' {
-  export function parseHTML(html: string): { document: any };
+  export class DOMParser {
+    parseFromString(html: string, mimeType?: string): Document;
+  }
 }

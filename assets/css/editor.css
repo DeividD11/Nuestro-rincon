@@ -1,0 +1,43 @@
+/* Distribución del pie del editor; se mantiene dentro de .editor-shell. */
+.editor-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 12px 24px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  clear: both;
+  position: relative;
+  isolation: isolate;
+}
+.editor-footer > small {
+  display: block;
+  min-width: 0;
+  max-width: 58ch;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.editor-footer .btn-group {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.editor-footer .btn-group .btn { min-width: 0; max-width: 100%; white-space: normal; }
+@media (max-width: 1200px) {
+  .editor-footer { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .editor-footer > small { max-width: 68ch; }
+  .editor-footer .btn-group { justify-content: stretch; }
+  .editor-footer .btn-group .btn { flex: 1 1 220px; }
+}
+@media (max-width: 720px) {
+  .editor-footer { grid-template-columns: minmax(0, 1fr); }
+  .editor-footer .btn-group { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .editor-footer .btn-group .btn { width: 100%; }
+}
+

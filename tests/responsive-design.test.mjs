@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('el saludo utiliza una ilustración adaptable sin depender de un glifo de fuente', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   const start = view.indexOf('class="greeting-card"');
   const end = view.indexOf('</section>', start);
   const markup = view.slice(start, end);
@@ -20,7 +21,7 @@ test('el saludo utiliza una ilustración adaptable sin depender de un glifo de f
 });
 
 test('el diseño define ajustes explícitos para móvil estrecho, móvil ancho, tablet y escritorio', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   for (const query of [
     '@media (max-width: 360px)',
     '@media (max-width: 399px)',
@@ -35,7 +36,7 @@ test('el diseño define ajustes explícitos para móvil estrecho, móvil ancho, 
 });
 
 test('los controles y superficies tienen estados de foco visibles y adaptación táctil', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /button:focus-visible[\s\S]*outline:/);
   assert.match(css, /@media \(hover: none\)/);
   assert.match(css, /env\(safe-area-inset-bottom\)/);

@@ -4,10 +4,10 @@ export class AppState {
     this.route = 'home';
     this.dashboard = { received: 0, unread: 0, sent: 0, drafts: 0, recent: [] };
     this.letters = [];
-    this.pagination = { offset: 0, nextOffset: 0, total: 0, limit: 40, hasMore: false, loading: false };
+    this.pagination = { cursor: null, loadedCount: 0, limit: 40, hasMore: false, loading: false };
     this.selectedLetter = null;
     this.notifications = [];
-    this.notificationPagination = { offset: 0, nextOffset: 0, total: 0, limit: 30, hasMore: false, loading: false };
+    this.notificationPagination = { cursor: null, loadedCount: 0, limit: 30, hasMore: false, loading: false };
     this.settings = { theme: 'system', time_zone: 'America/Bogota', in_app_notifications_enabled: true };
     this.sessions = [];
     this.invitation = null;

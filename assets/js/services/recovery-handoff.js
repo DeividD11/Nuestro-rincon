@@ -6,6 +6,10 @@ function createRecoveryCode() {
   return hex.match(/.{1,6}/g)?.join('-') || hex;
 }
 
+function createRecoveryCodeBundle(count = 10) {
+  return Array.from({ length: count }, () => createRecoveryCode());
+}
+
 function makeRequestId() {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -20,11 +24,20 @@ export function readPendingRecovery() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const pending = JSON.parse(raw);
-    if (!pending || pending.version !== 1
-      || !['registration', 'rotation'].includes(pending.purpose)
-      || typeof pending.requestId !== 'string'
-      || typeof pending.recoveryCode !== 'string'
-      || !/^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(pending.recoveryCode)) {
+    const validCode = value => typeof value === 'string' && /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(value);
+    const baseValid = pending && typeof pending.requestId === 'string'
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(pending.requestId);
+    const singleValid = pending?.version === 1
+      && ['registration', 'rotation'].includes(pending.purpose)
+      && baseValid && validCode(pending.recoveryCode);
+    const bundleValid = pending?.version === 2
+      && ['registration_bundle', 'rotation_bundle'].includes(pending.purpose)
+      && baseValid && Array.isArray(pending.recoveryCodes)
+      && pending.recoveryCodes.length === 10
+      && pending.recoveryCodes.every(validCode)
+      && new Set(pending.recoveryCodes).size === 10
+      && (pending.purpose !== 'registration_bundle' || (typeof pending.invitationCode === 'string' && typeof pending.displayName === 'string' && typeof pending.username === 'string'));
+    if (!singleValid && !bundleValid) {
       localStorage.removeItem(STORAGE_KEY);
       return null;
     }
@@ -35,18 +48,34 @@ export function readPendingRecovery() {
 }
 
 export function savePendingRecovery(pending) {
-  if (!pending || !['registration', 'rotation'].includes(pending.purpose)) {
+  if (!pending || !['registration', 'rotation', 'rotation_bundle', 'registration_bundle'].includes(pending.purpose)) {
     throw new Error('RECOVERY_HANDOFF_INVALID');
   }
-  const safe = {
-    version: 1,
-    purpose: pending.purpose,
-    requestId: String(pending.requestId || makeRequestId()),
-    recoveryCode: String(pending.recoveryCode || createRecoveryCode()),
-    serverConfirmed: pending.serverConfirmed === true,
-    createdAt: pending.createdAt || new Date().toISOString()
-  };
-  if (safe.purpose === 'registration') {
+  const requestId = String(pending.requestId || makeRequestId());
+  const isBundle = ['rotation_bundle', 'registration_bundle'].includes(pending.purpose);
+  const safe = isBundle
+    ? {
+        version: 2,
+        purpose: pending.purpose,
+        requestId,
+        recoveryCodes: Array.isArray(pending.recoveryCodes) ? pending.recoveryCodes.map(String) : [],
+        serverConfirmed: pending.serverConfirmed === true,
+        createdAt: pending.createdAt || new Date().toISOString()
+      }
+    : {
+        version: 1,
+        purpose: pending.purpose,
+        requestId,
+        recoveryCode: String(pending.recoveryCode || createRecoveryCode()),
+        serverConfirmed: pending.serverConfirmed === true,
+        createdAt: pending.createdAt || new Date().toISOString()
+      };
+  if (isBundle) {
+    if (safe.recoveryCodes.length !== 10 || !safe.recoveryCodes.every(code => /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(code)) || new Set(safe.recoveryCodes).size !== 10) {
+      throw new Error('RECOVERY_BUNDLE_INVALID');
+    }
+  }
+  if (['registration', 'registration_bundle'].includes(safe.purpose)) {
     safe.invitationCode = String(pending.invitationCode || '').trim();
     safe.displayName = String(pending.displayName || '').trim();
     safe.username = String(pending.username || '').trim();
@@ -64,9 +93,9 @@ export function savePendingRecovery(pending) {
 
 export function createPendingRegistration(data = {}) {
   return savePendingRecovery({
-    purpose: 'registration',
+    purpose: 'registration_bundle',
     requestId: makeRequestId(),
-    recoveryCode: createRecoveryCode(),
+    recoveryCodes: createRecoveryCodeBundle(10),
     invitationCode: data.invitationCode,
     displayName: data.displayName,
     username: data.username
@@ -78,6 +107,14 @@ export function createPendingRotation() {
     purpose: 'rotation',
     requestId: makeRequestId(),
     recoveryCode: createRecoveryCode()
+  });
+}
+
+export function createPendingRecoveryCodeBundle() {
+  return savePendingRecovery({
+    purpose: 'rotation_bundle',
+    requestId: makeRequestId(),
+    recoveryCodes: createRecoveryCodeBundle(10)
   });
 }
 

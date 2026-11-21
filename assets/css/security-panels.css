@@ -1,0 +1,36 @@
+/* Invitaciones privadas: el código visible se mantiene únicamente en memoria. */
+.invitation-card{border-color:color-mix(in srgb,var(--accent-2) 38%,var(--line));background:linear-gradient(145deg,var(--paper-2),color-mix(in srgb,var(--accent-2) 7%,var(--paper-2)))}
+.invitation-card>p,.invitation-status p,.invitation-reveal p{font-size:12px;line-height:1.7;color:var(--muted)}
+.invitation-status,.invitation-reveal{display:grid;gap:11px}
+.pending-invitation{display:inline-flex;align-items:center;justify-self:start;padding:5px 10px;border-radius:999px;background:color-mix(in srgb,#bb8749 14%,var(--paper-2));color:color-mix(in srgb,#976225 82%,var(--ink));font-size:10px;font-weight:750}
+.invitation-code-label{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:750}
+.invitation-code{display:block;overflow-wrap:anywhere;border:1px dashed color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:13px;background:var(--paper);padding:15px 13px;color:var(--ink);font:700 clamp(12px,2vw,15px)/1.8 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.035em;user-select:all}
+.invitation-actions{display:flex;flex-wrap:wrap;gap:8px}
+.invitation-actions .btn{flex:1 1 140px}
+#register-invitation{text-transform:uppercase;letter-spacing:.04em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+html[data-theme="dark"] .invitation-card{background:linear-gradient(145deg,var(--paper-2),color-mix(in srgb,var(--accent-2) 11%,var(--paper-2)))}
+html[data-theme="dark"] .pending-invitation{background:color-mix(in srgb,#bb8749 20%,var(--paper-2));color:#e3c18f}
+@media(max-width:420px){.invitation-actions{display:grid;grid-template-columns:1fr}.invitation-actions .btn{width:100%}.invitation-code{font-size:11px;padding:12px 10px}}
+
+/* Recuperación de acceso: avisos claros y tarjeta dedicada en Configuración. */
+.form-notice {
+  margin: 12px 0 16px;
+  padding: 13px 15px;
+  border: 1px solid var(--line-strong, var(--line));
+  border-radius: 14px;
+  background: var(--surface-soft, var(--surface));
+  color: var(--text-soft, var(--muted));
+  font-size: 13px;
+  line-height: 1.65;
+}
+.recovery-code-card form > .muted {
+  display: block;
+  margin-top: 10px;
+  line-height: 1.55;
+}
+.recovery-code-card .setting-card-heading {
+  margin-bottom: 14px;
+}
+.recovery-code-card .field {
+  margin-bottom: 14px;
+}

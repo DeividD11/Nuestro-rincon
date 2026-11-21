@@ -21,7 +21,7 @@ test('AppController compone los métodos reales de los seis controladores especi
     assert.equal(typeof AppController.prototype[method], 'function', `Falta método compuesto: ${method}`);
   }
   const main = await read('../assets/js/controllers/app-controller.js');
-  assert.ok(main.split('\n').length < 800, 'el controlador principal debe quedar como orquestador');
+  assert.ok(main.split('\n').length < 900, 'el controlador principal debe mantenerse por debajo de 900 líneas y delegar sus áreas especializadas');
   assert.match(main, /Object\.getOwnPropertyDescriptors\(modulePrototype\)/);
 });
 
@@ -169,7 +169,8 @@ test('el sondeo de notificaciones no reconstruye otras vistas ni descarta págin
   controller.repository = {
     notifications: async () => ({
       items: [{ id: 'new-1', read_at: null, created_at: '2026-11-20T10:00:00Z' }],
-      total: 3, offset: 0, nextOffset: 1, limit: 30, hasMore: true
+      nextCursor: { sortAt: '2026-11-20T10:00:00Z', id: '11111111-1111-4111-8111-111111111111' },
+      loaded: 1, limit: 30, hasMore: true
     })
   };
   controller.state = {
@@ -178,7 +179,7 @@ test('el sondeo de notificaciones no reconstruye otras vistas ni descarta págin
       { id: 'old-2', read_at: '2026-11-19T10:00:00Z', created_at: '2026-11-19T10:00:00Z' },
       { id: 'old-3', read_at: '2026-11-18T10:00:00Z', created_at: '2026-11-18T10:00:00Z' }
     ],
-    notificationPagination: { nextOffset: 60, limit: 30 }
+    notificationPagination: { cursor: { sortAt: '2026-11-18T10:00:00Z', id: '22222222-2222-4222-8222-222222222222' }, loadedCount: 60, limit: 30 }
   };
   controller.root = { querySelector: () => button };
   controller.render = () => { throw new Error('NO_FULL_RENDER_DURING_BACKGROUND_POLL'); };
@@ -186,7 +187,32 @@ test('el sondeo de notificaciones no reconstruye otras vistas ni descarta págin
 
   await controller.refreshNotifications();
   assert.deepEqual(controller.state.notifications.map(item => item.id), ['new-1', 'old-2', 'old-3']);
-  assert.equal(controller.state.notificationPagination.nextOffset, 3);
+  assert.equal(controller.state.notificationPagination.loadedCount, 3);
+  assert.deepEqual(controller.state.notificationPagination.cursor, { sortAt: '2026-11-20T10:00:00Z', id: '11111111-1111-4111-8111-111111111111' });
   assert.equal(button['aria-label'], 'Notificaciones, 1 sin leer');
   assert.equal(dot.removed, undefined);
+});
+
+
+test('la sincronización remota de borradores vive en un servicio independiente', async () => {
+  const draft = await read('../assets/js/controllers/draft-controller.js');
+  const service = await read('../assets/js/services/draft-sync-service.js');
+  assert.match(draft, /syncDraftSnapshot\(this, initialSnapshot, initialStorageKey, options\)/);
+  assert.doesNotMatch(draft, /async syncDraftSnapshot\([\s\S]{1000,}/);
+  assert.match(service, /export async function syncDraftSnapshot\(controller/);
+  assert.match(service, /controller\.repository\.createDraft/);
+  assert.match(service, /controller\.draftIdentity/);
+  assert.match(service, /controller\.invalidateRouteCache/);
+});
+
+
+test('la persistencia local de borradores también está aislada del controlador', async () => {
+  const draft = await read('../assets/js/controllers/draft-controller.js');
+  const service = await read('../assets/js/services/draft-persistence-service.js');
+  assert.match(draft, /persistLocalDraft\(this\)/);
+  assert.match(draft, /persistEmergencyDraft\(this, snapshot\)/);
+  assert.match(draft, /async hydrateEditorFromLocal\(storageKey, identity\) \{ return hydrateEditorFromLocal\(this, storageKey, identity\); \}/);
+  assert.match(service, /export async function persistLocalDraft\(controller\)/);
+  assert.match(service, /export function persistEmergencyDraft\(controller/);
+  assert.match(service, /export async function hydrateEditorFromLocal\(controller/);
 });

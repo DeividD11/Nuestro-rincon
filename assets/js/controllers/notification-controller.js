@@ -18,11 +18,10 @@ export class NotificationController {
         return dateDelta || String(b.id).localeCompare(String(a.id));
       });
       this.state.notificationPagination = {
-        offset: 0,
-        nextOffset: this.state.notifications.length,
-        total: Math.max(Number(result.total) || 0, this.state.notifications.length),
+        cursor: result.nextCursor || null,
+        loadedCount: this.state.notifications.length,
         limit: result.limit || currentPagination.limit || 30,
-        hasMore: this.state.notifications.length < Math.max(Number(result.total) || 0, this.state.notifications.length),
+        hasMore: Boolean(result.hasMore),
         loading: false
       };
       if (this.state.route === 'notifications') this.renderCurrentRoute();

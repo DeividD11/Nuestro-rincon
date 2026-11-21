@@ -4,7 +4,7 @@
 
 La revisión del 21 de noviembre de 2026 detectó que el ZIP de trabajo contenía cambios locales respecto al único commit incluido (`5a071371cde5dcc22a5bbfa675f3c2e98ca54560`). El proyecto GitHub `DeividD11/Nuestro-rincon` utiliza `main` como rama predeterminada.
 
-En Supabase, el proyecto `tiqbmuubpbmxqvtkcdhq` tiene 23 migraciones registradas y Edge Functions `auth-api` v11 y `letters-api` v8. La inspección en vivo encontró que las ocho funciones SQL declaradas por las cuatro migraciones locales no registradas ya existen en `public`, con permisos `EXECUTE` exclusivos de `service_role`. También están presentes los índices de paginación seleccionados y el trigger que reevalúa la purga al deshabilitar una cuenta. Las Edge Functions activas todavía no usan las RPC locales más recientes.
+En Supabase, el proyecto `tiqbmuubpbmxqvtkcdhq` tiene 23 migraciones registradas y Edge Functions `auth-api` v11 y `letters-api` v8. La inspección en vivo encontró que las ocho funciones SQL y estructuras declaradas por las primeras cuatro migraciones locales no registradas ya existen en `public`, con permisos `EXECUTE` exclusivos de `service_role`. También están presentes los índices de paginación seleccionados y el trigger que reevalúa la purga al deshabilitar una cuenta. Las Edge Functions activas todavía no usan las RPC locales más recientes.
 
 Esta diferencia requiere reconciliar esquema, ledger y código desplegado; no debe resolverse ejecutando todas las migraciones por orden sin comprobar primero sus efectos.
 
@@ -66,9 +66,9 @@ Abre un pull request desde esa rama hacia `main`. No se recomienda enviar estos 
 Antes de desplegar Edge Functions:
 
 1. Obtener un respaldo verificable y probar su restauración en un proyecto aislado.
-2. Comparar las ocho funciones SQL definidas por los cuatro scripts locales con las definiciones reales (`pg_get_functiondef`), firmas, propietarios, permisos y dependencias.
-3. Comparar constraints, columnas, triggers e índices de las cuatro migraciones con el estado remoto real.
-4. Ejecutar las pruebas pgTAP en una base aislada y las pruebas de integración con dos cuentas de prueba.
+2. Comparar las ocho funciones SQL definidas por los cuatro scripts de dominio anteriores con las definiciones reales (`pg_get_functiondef`), firmas, propietarios, permisos y dependencias.
+3. Comparar constraints, columnas, triggers e índices de los cuatro scripts anteriores con el estado remoto real. La quinta migración, `20261121200000_recovery_code_bundles.sql`, es nueva: no está en producción y sus objetos deben probarse como DDL nuevo, incluido el RPC del alta con diez códigos.
+4. Ejecutar `npm run test:db` (psql + parser TAP) en una base aislada y las pruebas de integración con dos cuentas de prueba.
 5. Solo después decidir si se necesita aplicar DDL, reparar el historial de migraciones para reflejar objetos ya existentes, o ambas cosas. No marcar una migración como aplicada hasta demostrar que todo su efecto ya está presente y coincide exactamente.
 6. Desplegar `auth-api` y `letters-api` como un conjunto compatible con las RPC existentes y ejecutar pruebas de humo con las cuentas de prueba.
 
@@ -76,4 +76,4 @@ No usar `supabase db push --remote` contra producción para resolver la diferenc
 
 ## 5. Activación E2EE: puerta separada
 
-El cifrado de extremo a extremo no forma parte de este arreglo de CI ni de la sincronización. `docs/E2EE_ARCHITECTURE.md` sigue siendo una propuesta. Antes de activar E2EE debe aprobarse y probarse el protocolo criptográfico, la identidad/huella de ambas cuentas, el respaldo/recuperación de claves, el cifrado de borradores, el formato versionado de ciphertext y la migración reversible y verificable del historial en claro. No desplegar un esquema híbrido que anuncie privacidad E2EE mientras el servidor siga recibiendo contenido legible.
+La migración de los diez códigos de respaldo `20261121200000_recovery_code_bundles.sql` y su nueva versión de `auth-api` deben validarse y desplegarse juntos; la función antigua no acepta `recoveryCodes` en el registro. El cifrado de extremo a extremo no forma parte de este arreglo de CI ni de la sincronización. `docs/E2EE_ARCHITECTURE.md` sigue siendo una propuesta. Antes de activar E2EE debe aprobarse y probarse el protocolo criptográfico, la identidad/huella de ambas cuentas, el respaldo/recuperación de claves, el cifrado de borradores, el formato versionado de ciphertext y la migración reversible y verificable del historial en claro. No desplegar un esquema híbrido que anuncie privacidad E2EE mientras el servidor siga recibiendo contenido legible.

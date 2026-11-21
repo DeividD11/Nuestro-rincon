@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -69,7 +70,7 @@ test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () 
 test('la instantánea del esquema se obtiene del historial real y no de un esquema supuesto', async () => {
   const schemaReadme = await read('../supabase/schema/README.md');
   const projectReadme = await read('../README.md');
-  assert.match(schemaReadme, /supabase db dump --remote/);
+  assert.match(schemaReadme, /supabase db dump --db-url/);
   assert.doesNotMatch(schemaReadme, /supabase db dump --linked/);
   assert.match(projectReadme, /23 migraciones/);
 });
@@ -145,7 +146,7 @@ test('los errores de conexión distinguen falta de red y bloqueo de solicitud', 
 });
 
 test('form-error dispone de separación y desaparece cuando no contiene texto', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /\.form-error\{[^}]*margin:16px 0 20px/);
   assert.match(css, /\.form-error:empty\{display:none\}/);
 });
@@ -166,7 +167,7 @@ test('las preferencias guardan el tema claro, oscuro o del sistema por usuario',
   const view = await read('../assets/js/views/app-view.js');
   const controller = await readControllerSource();
   const api = await read('../supabase/functions/letters-api/index.ts');
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(view, /id="settings-theme" name="theme"/);
   assert.match(view, /option value="dark"/);
   assert.match(controller, /cacheTheme\(this\.state\.settings\.theme\)/);
@@ -213,7 +214,7 @@ test('Archivo, Borradores y Papelera tienen acciones y mensajes propios', async 
 
 test('el aviso de notificaciones usa un conmutador accesible y las sesiones son tarjetas completas', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(view, /id="settings-notifications" class="toggle-input" type="checkbox"/);
   assert.match(view, /class="session-list"/);
   assert.match(view, /class="session-row/);
@@ -250,7 +251,7 @@ test('el render real ofrece recuperar un borrador en Papelera y archivar una car
 test('el tema se aplica antes de los estilos y cubre login, registro y recuperación', async () => {
   const boot = await read('../assets/js/theme-boot.js');
   const html = await read('../index.html');
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   const controller = await readControllerSource();
   assert.match(html, /assets\/js\/theme-boot\.js/);
   assert.match(boot, /nuestro-rincon:theme:last/);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -57,14 +58,15 @@ test('el borrador se respalda localmente al salir y se reanuda al volver a abrir
 
 test('las escrituras de borradores se serializan y un ID remoto desaparecido se recupera sin borrar la copia local', async () => {
   const controller = await readControllerSource();
+  const draftSync = await read('../assets/js/services/draft-sync-service.js');
   const api = await read('../assets/js/services/api-client.js');
   assert.match(controller, /this\.draftSyncQueue = new DraftSyncQueue\(\)/);
   assert.match(controller, /this\.draftSyncQueue\.enqueue\(queueKey/);
   assert.doesNotMatch(controller, /this\.draftQueues = new Map\(\)/);
-  assert.match(controller, /if \(error\.status !== 404 && error\.code !== 'DRAFT_NOT_FOUND'\) throw error/);
-  assert.match(controller, /const replacementRequestId = crypto\.randomUUID\(\)/);
-  assert.match(controller, /No se pudo recuperar la copia local como un nuevo borrador/);
-  assert.match(controller, /await deleteLocalDraft\(oldStorageKey\)/);
+  assert.match(draftSync, /if \(error\.status !== 404 && error\.code !== 'DRAFT_NOT_FOUND'\) throw error/);
+  assert.match(draftSync, /const replacementRequestId = crypto\.randomUUID\(\)/);
+  assert.match(draftSync, /No se pudo recuperar la copia local como un nuevo borrador/);
+  assert.match(draftSync, /await deleteLocalDraft\(oldStorageKey\)/);
   assert.match(api, /safeToRetry: RETRYABLE_READ_ACTIONS\.has\(action\)/);
 });
 
@@ -98,11 +100,12 @@ test('descartar un borrador es de una sola pulsación y retira la tarjeta sin es
 
 test('los guardados se serializan por cuenta y descartan copias locales de una carta en Papelera', async () => {
   const controller = await readControllerSource();
+  const draftSync = await read('../assets/js/services/draft-sync-service.js');
   const localDrafts = await read('../assets/js/services/local-drafts.js');
   assert.match(controller, /draftSyncQueueKey\(\)/);
   assert.match(controller, /const queueKey = this\.draftSyncQueueKey\(\)/);
   assert.match(controller, /clearLocalDraftForLetter\(/);
-  assert.match(controller, /result\.status === 'discarded'/);
+  assert.match(draftSync, /result\.status === 'discarded'/);
   assert.match(controller, /this\.discardedDraftIds\.has\(snapshot\.letterId\)/);
   assert.match(localDrafts, /savedAt: draft\.savedAt \|\| new Date\(\)\.toISOString\(\)/);
 });
@@ -125,7 +128,7 @@ test('la vinculación inicial de destinatario está permitida una sola vez y no 
 });
 
 test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto coherente', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   const html = await read('../index.html');
   const appView = await read('../assets/js/views/app-view.js');
   const widths = [
@@ -146,11 +149,12 @@ test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto c
 test('las claves antiguas de borradores purgados generan una nueva carta idempotente', async () => {
   const sql = await read('../supabase/migrations/20261117041103_idempotent_recovery_for_purged_drafts.sql');
   const controller = await readControllerSource();
+  const draftSync = await read('../assets/js/services/draft-sync-service.js');
   assert.match(sql, /v_letter\.status <> 'purged'/);
   assert.match(sql, /nuestro-rincon-purged-draft/);
   assert.match(sql, /v_effective_request_id/);
-  assert.match(controller, /created\?\.draft\?\.status === 'purged'/);
-  assert.match(controller, /DRAFT_CREATE_UNCONFIRMED/);
+  assert.match(draftSync, /created\?\.draft\?\.status === 'purged'/);
+  assert.match(draftSync, /DRAFT_CREATE_UNCONFIRMED/);
 });
 
 test('la cuenta eliminada libera uno de los dos espacios de registro', async () => {
@@ -185,6 +189,7 @@ test('la copia local se actualiza en cada pulsación y se hidrata sin bloquear l
 
 test('la sincronización de un borrador no elimina la copia de emergencia de otra carta abierta', async () => {
   const controller = await readControllerSource();
-  assert.match(controller, /emergencyLatest && !\(this\.state\.editor && this\.state\.route === 'write' && !currentMatches\)/);
-  assert.match(controller, /No borres la emergencia de una carta diferente que se esté editando/);
+  const draftSync = await read('../assets/js/services/draft-sync-service.js');
+  assert.match(draftSync, /emergencyLatest && !\(controller\.state\.editor && controller\.state\.route === 'write' && !currentMatches\)/);
+  assert.match(draftSync, /No borres la emergencia de una carta diferente que se esté editando/);
 });

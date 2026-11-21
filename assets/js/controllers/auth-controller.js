@@ -1,12 +1,12 @@
 import { showConfirmDialog } from '../utils/dom.js';
-import { readPendingRecovery, createPendingRegistration, createPendingRotation, clearPendingRecovery } from '../services/recovery-handoff.js';
+import { readPendingRecovery, createPendingRegistration, createPendingRecoveryCodeBundle, clearPendingRecovery } from '../services/recovery-handoff.js';
 
 export class AuthController {
     getRegistrationRecoveryHandoff(data) {
       const existing = readPendingRecovery();
       const normalize = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase('es-CO');
       const normalizeInvite = value => String(value || '').normalize('NFKC').replace(/[\s-]/g, '').toUpperCase();
-      if (existing?.purpose === 'registration'
+      if (['registration', 'registration_bundle'].includes(existing?.purpose)
         && normalize(existing.username) === normalize(data.username)
         && normalizeInvite(existing.invitationCode) === normalizeInvite(data.invitationCode)) {
         return existing;
@@ -16,14 +16,14 @@ export class AuthController {
 
     getRotationRecoveryHandoff() {
       const existing = readPendingRecovery();
-      return existing?.purpose === 'rotation' ? existing : createPendingRotation();
+      return ['rotation', 'rotation_bundle'].includes(existing?.purpose) ? existing : createPendingRecoveryCodeBundle();
     }
 
     async continueAfterRecoverySaved() {
       const approved = await showConfirmDialog({
         tone: 'neutral',
         title: '¿Ya guardaste el código?',
-        message: 'Antes de continuar, confirma que copiaste el código y lo guardaste fuera de este dispositivo.',
+        message: 'Antes de continuar, confirma que guardaste todos los códigos fuera de este dispositivo o descargaste la copia cifrada.',
         detail: 'Al continuar, la copia temporal se eliminará de este navegador y no podremos volver a mostrar el mismo código.',
         confirmLabel: 'Sí, ya lo guardé',
         cancelLabel: 'Seguir en esta pantalla'
@@ -32,6 +32,7 @@ export class AuthController {
       const route = this._recoveryContinueRoute || 'home';
       clearPendingRecovery();
       this._lastRecoveryCode = '';
+      this._lastRecoveryCodes = [];
       this._recoveryContinueRoute = 'home';
       history.replaceState(null, '', location.pathname);
       if (this._sessionRevokedWhileRecoveryPending) {
@@ -65,7 +66,7 @@ export class AuthController {
         this.view.renderLogin();
         return;
       }
-      if (pending.purpose === 'registration') {
+      if (['registration', 'registration_bundle'].includes(pending.purpose)) {
         this.view.renderRegister('', pending);
         this.root.querySelector('#register-password')?.focus();
         return;

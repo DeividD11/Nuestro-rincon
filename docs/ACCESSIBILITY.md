@@ -1,52 +1,77 @@
 # Accesibilidad y gestión del enfoque
 
-Esta guía describe los controles de accesibilidad incluidos en la interfaz. Es una lista de implementación y de validación manual; no sustituye una auditoría WCAG completa ni implica que se hayan ejecutado pruebas físicas con lectores de pantalla.
+La interfaz incorpora controles semánticos, navegación por teclado, estados de foco, regiones de anuncios específicas, objetivos táctiles y compatibilidad con movimiento reducido. Esta guía separa la cobertura automatizada de las pruebas manuales: pasar axe-core o la auditoría de paleta no constituye por sí solo una certificación WCAG.
+
+## Cobertura automatizada incluida
+
+El workflow `Verify and deploy Nuestro Rincón` ejecuta las comprobaciones antes de subir el artefacto que después consume el despliegue:
+
+1. `npm ci` instala exactamente el árbol de dependencias declarado en `package-lock.json`.
+2. `npm run check` valida estructura, imports y sintaxis.
+3. `npm run check:contrast` analiza combinaciones de la paleta de tema claro y oscuro.
+4. `npm run check:edge` ejecuta `deno check` en las Edge Functions.
+5. `npm test` ejecuta las pruebas de contrato y comportamiento.
+6. `npm run build:pages` prepara el sitio.
+7. `npm run test:a11y` ejecuta axe-core en Chromium para los estados de login, registro, recuperación, buzón, editor, notificaciones y configuración, en tema claro y oscuro.
+
+La suite axe analiza las etiquetas WCAG 2.0/2.1/2.2 de nivel A y AA en los DOM de prueba. Cualquier violación reportada falla el job de verificación y evita que se publique el artefacto.
+
+### Alcance de la auditoría de contraste
+
+`tools/contrast-audit.mjs` calcula ratios WCAG para 22 pares explícitos de la paleta en los dos temas: texto principal, secundario y suave, acento de navegación, anillo de foco y texto de los botones primarios. Usa 4.5:1 para texto normal y 3:1 para el indicador de foco/no texto, según el criterio aplicable.
+
+Esta auditoría cubre tokens y combinaciones seleccionadas, no todos los colores hard-coded ni todos los estados hover, disabled, error, selección y borde. La regla `color-contrast` de axe añade comprobación sobre texto visible en las pantallas de la matriz; los componentes y estados no renderizados deben comprobarse de manera específica.
 
 ## Estructura y anuncios
 
-- `#app` es el contenedor de la interfaz y **no** es una región viva. Reemplazar una vista completa no provoca que un lector de pantalla intente anunciar toda la aplicación.
+- `#app` no es una región viva. Sustituir la vista no debe anunciar indiscriminadamente toda la aplicación.
 - `#app-announcer` es una región `status` (`aria-live="polite"`) para confirmaciones e información.
 - `#app-alert-announcer` es una región `alert` (`aria-live="assertive"`) para errores que requieren atención.
-- Los avisos visuales son grupos normales, no regiones vivas adicionales. `showToast` envía un único texto breve a la región adecuada.
-- Las vistas autenticadas incluyen un enlace para saltar al contenido, una navegación principal con nombre accesible y un encabezado de página enfocable.
-- La ruta activa se identifica con `aria-current="page"`.
+- Los avisos visuales no añaden regiones vivas adicionales.
+- Las vistas autenticadas incluyen enlace para saltar al contenido, navegación principal con nombre accesible, ruta activa y encabezado enfocable.
 
-## Gestión del enfoque
+## Gestión del enfoque y teclado
 
-- Al navegar a otra sección desde la navegación, el foco se coloca en el encabezado principal de esa sección.
-- La navegación móvil cerrada se marca como `inert` y `aria-hidden`; al abrirla, el contenido principal queda temporalmente inerte y el foco pasa al botón de cierre.
-- Al cerrar el menú se restaura el foco al control «Abrir menú». La tecla Escape cierra el menú.
-- Si se cambia el tamaño de la ventana mientras el foco está dentro del panel que va a quedar inerte, se traslada primero a un control que permanece disponible.
-- El diálogo para revisar el envío de una carta limita el recorrido de Tab, responde a Escape, oculta/inactiva la aplicación de fondo y devuelve el foco al control que lo abrió.
-- Los diálogos de confirmación utilizan el mismo patrón de foco y teclado.
+- Al navegar a otra sección, el foco se coloca en el encabezado principal.
+- El menú móvil cerrado se marca como `inert` y `aria-hidden`; al abrirlo, el foco pasa al control de cierre.
+- Al cerrar el menú se restaura el foco al control «Abrir menú». Escape cierra el panel.
+- Los diálogos de confirmación y vista previa limitan el recorrido de Tab, responden a Escape, inactivan el fondo y devuelven el foco al disparador.
+- Los controles del editor tienen nombres accesibles y son alcanzables mediante Tab, Enter o Espacio.
+- El pie del editor vive dentro de `.editor-shell`; sus reglas están aisladas en `assets/css/editor.css` y cambian a una sola columna en tablet/móvil.
 
-## Formularios y editor
+## Pruebas manuales requeridas antes de declarar conformidad
 
-- Los campos tienen etiquetas asociadas; los botones de envío declaran `type="submit"` y las acciones auxiliares `type="button"`.
-- Se conservan la validación nativa de HTML (`required`, `minlength`, `pattern`, `type="email"`) y los mensajes de error con `role="alert"`.
-- El editor enriquecido se presenta como un `textbox` multilínea con nombre y descripción accesibles.
-- La barra de formato contiene botones con nombres accesibles. Cada botón se puede alcanzar con Tab y activar con Enter o Espacio.
+| Tecnología / entorno | Recorrido | Resultado que debe comprobarse | Estado |
+|---|---|---|---|
+| Solo teclado, escritorio | Tab / Shift+Tab desde login hasta el último control | Orden lógico, foco visible, sin trampas fuera de diálogos | Pendiente manual |
+| Solo teclado, escritorio | Login, registro, recuperación y formularios de configuración | Etiquetas, validación, errores, orden de lectura | Pendiente manual |
+| Solo teclado, escritorio | Editor y vista previa de envío | Toolbar, textbox, botones, foco y cierre con Escape | Pendiente manual |
+| NVDA + Firefox (Windows) | Inicio, buzón, editor, respuestas, ajustes y errores | Landmarks, encabezados, nombres, estados y anuncios sin duplicados | Pendiente manual |
+| NVDA + Chrome (Windows) | Formularios y navegación entre secciones | Lectura coherente y foco tras navegación | Pendiente manual |
+| VoiceOver + Safari (macOS/iOS) | Navegación, menú móvil, editor y diálogos | Rotor, agrupación, foco al abrir/cerrar y controles táctiles | Pendiente manual |
+| TalkBack + Chrome (Android) | Buzón, carta, editor y enviar | Orden de lectura, áreas táctiles y panel oculto no enfocable | Pendiente manual |
+| Zoom 200 % y reflow 320 CSS px | Editor, listas, notificaciones, ajustes | Sin pérdida de contenido/función ni desplazamiento horizontal no esencial | Pendiente manual |
+| Contraste manual | Texto, placeholders, bordes, foco, hover, disabled, error y selección | Verificar pares reales de primer plano/fondo en ambos temas | Pendiente manual |
 
-## Contraste, controles y movimiento
+Las pruebas de lectores de pantalla no se ejecutan en GitHub Actions: requieren tecnologías de asistencia y sistemas operativos reales. No se afirma que NVDA, VoiceOver o TalkBack hayan sido probados por esta entrega.
 
-- Se oscurecieron tonos secundarios de la interfaz clara y los textos de marcador de posición para mejorar su legibilidad.
-- Los controles del área principal y la navegación móvil alcanzan un área táctil mínima de 44 × 44 CSS px en dispositivos con puntero grueso, sin ampliar artificialmente todos los botones pequeños de escritorio.
-- Los indicadores de foco son visibles y no dependen solo del color de fondo.
-- Las transiciones y animaciones decorativas se reducen cuando `prefers-reduced-motion: reduce` está activo.
+## Límites conocidos
 
-Los cambios de color son una mejora dirigida, no una certificación de contraste de cada combinación de texto, borde, estado y tema. Para una auditoría formal deben medirse los pares reales de primer plano y fondo, incluidos hover, disabled, error y foco, en ambos temas.
+- axe-core detecta muchos problemas A/AA, pero no puede determinar por completo si el orden de lectura, la redacción de instrucciones, el contexto o el comportamiento son adecuados.
+- Los fixtures automatizados cubren las pantallas enumeradas; cada modal, estado de error, selección, papelera y contenido de conversación requiere fixtures adicionales o pruebas manuales.
+- Los cambios de color de `tools/contrast-audit.mjs` son una revisión de paleta; no certifican cada píxel de la aplicación.
 
-## Matriz de pruebas manuales recomendada
+## Ejecución local
 
-| Entorno | Recorrido | Resultado que debe comprobarse |
-|---|---|---|
-| Teclado, escritorio | Tab / Shift+Tab desde login hasta el último control | Orden lógico, foco visible, sin trampas fuera de diálogos |
-| Teclado, escritorio | Saltar al contenido y navegar entre secciones | El enlace de salto funciona y cada cambio mueve el foco al encabezado |
-| Teclado, escritorio | Crear cuenta, recuperar acceso y guardar preferencias | Campos etiquetados, validación nativa, errores anunciados |
-| Teclado, escritorio | Abrir y cerrar la vista previa de envío | Tab queda dentro del diálogo; Escape cierra; foco vuelve al disparador |
-| NVDA + Firefox (Windows) | Inicio, buzón, editor, respuestas, configuración y errores | Landmarks, encabezados, nombres de controles y avisos no duplicados |
-| NVDA + Chrome (Windows) | Navegar y operar los formularios | Lectura coherente de etiquetas, estados, botones y errores |
-| VoiceOver + Safari (macOS/iOS) | Navegación principal, menú móvil y editor | Rotor/landmarks, foco al abrir/cerrar menú y controles táctiles |
-| TalkBack + Chrome (Android) | Navegar, abrir cartas y enviar | Orden de lectura, áreas táctiles y ausencia de foco en el panel oculto |
+```bash
+npm ci
+npm run check:contrast
+npx playwright install chromium
+npm run test:a11y
+```
 
-**Estado de esta entrega:** se ejecutan comprobaciones automáticas de estructura y contrato. No se dispone de un entorno de lector de pantalla ni de dispositivos físicos en el proceso de empaquetado; por eso las filas NVDA, VoiceOver y TalkBack quedan pendientes de validación manual antes de declarar conformidad completa.
+Para ejecutar toda la matriz de recorridos de navegador con datos de prueba aislados:
+
+```bash
+npm run test:e2e
+```

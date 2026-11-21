@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
 import { AppController } from '../assets/js/controllers/app-controller.js';
 import { AppView } from '../assets/js/views/app-view.js';
@@ -126,7 +127,7 @@ test('la navegación enfoca el encabezado después de renderizar la sección', a
 });
 
 test('la hoja de estilos contempla foco visible, áreas táctiles y movimiento reducido', async () => {
-  const css = await read('../assets/css/app.css');
+  const css = await readCssBundle();
   assert.match(css, /\.skip-link:focus/);
   assert.match(css, /\.topbar h1:focus/);
   assert.match(css, /@media \(pointer: coarse\)[\s\S]*?min-width: 44px[\s\S]*?min-height: 44px/);
@@ -155,4 +156,58 @@ test('las notificaciones push se mantienen documentadas como función futura no 
   assert.match(roadmap, /No enviar contenido, título de la carta, remitente ni fragmentos privados/);
   assert.match(roadmap, /sesiones propias opacas/);
   assert.match(readme, /notificaciones externas todavía no están implementadas/);
+});
+
+
+test('el pie del editor queda dentro del editor-shell y no invade el área del sidebar', async () => {
+  const view = await read('../assets/js/views/app-view.js');
+  const css = await read('../assets/css/editor.css');
+  const start = view.indexOf('renderEditor(state) {');
+  const end = view.indexOf('renderLetter(state)', start);
+  const editor = view.slice(start, end);
+  assert.match(editor, /editor-writing-surface[\s\S]*letter-editor[\s\S]*<div class="editor-footer">[\s\S]*<\/section>/);
+  assert.doesNotMatch(editor, /letter-body-help[\s\S]*<\/div><\/div><div class="editor-footer">/);
+  assert.match(css, /\.editor-footer\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*auto\)/);
+  assert.match(css, /@media \(max-width: 1200px\)[\s\S]*\.editor-footer \{ grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /\.editor-footer > small[\s\S]*overflow-wrap: anywhere/);
+});
+
+
+test('el pie del editor pertenece a editor-shell y sus reglas viven en un módulo CSS específico', async () => {
+  const view = await read('../assets/js/views/app-view.js');
+  const css = await read('../assets/css/editor.css');
+  const index = await read('../index.html');
+  const start = view.indexOf('<section class="editor-shell">');
+  const end = view.indexOf('</section>`;', start);
+  const editorMarkup = view.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(editorMarkup, /<div class="editor-footer">[\s\S]*<\/div>$/);
+  assert.match(css, /@media \(max-width: 1200px\)/);
+  assert.match(css, /@media \(max-width: 720px\)/);
+  assert.match(index, /assets\/css\/editor\.css/);
+});
+
+test('la auditoría de contraste cubre las superficies reales de ambos temas y es parte del pipeline', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const contrast = await read('../tools/contrast-audit.mjs');
+  const workflow = await read('../.github/workflows/pages.yml');
+  assert.match(contrast, /panel lateral oscuro/);
+  assert.match(contrast, /panel lateral claro/);
+  assert.match(workflow, /npm run check:contrast/);
+  const result = spawnSync(process.execPath, ['tools/contrast-audit.mjs'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
+test('axe-core WCAG 2.2 AA corre en ambos temas y Playwright forma parte del gate de Pages', async () => {
+  const packageJson = JSON.parse(await read('../package.json'));
+  const lock = JSON.parse(await read('../package-lock.json'));
+  const workflow = await read('../.github/workflows/pages.yml');
+  const axe = await read('../tests/e2e/accessibility.spec.mjs');
+  assert.equal(packageJson.devDependencies['axe-core'], '4.14.1');
+  assert.equal(lock.packages['node_modules/axe-core'].version, '4.14.1');
+  assert.match(axe, /wcag22aa/);
+  assert.match(axe, /\['light', 'dark'\]/);
+  assert.match(workflow, /npm ci/);
+  assert.match(workflow, /npm run test:a11y/);
+  assert.ok(workflow.indexOf('npm run test:a11y') < workflow.indexOf('actions/upload-artifact@v4'));
 });

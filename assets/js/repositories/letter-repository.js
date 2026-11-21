@@ -1,8 +1,8 @@
 export class LetterRepository {
   constructor(api) { this.api = api; }
   dashboard() { return this.api.letters('dashboard'); }
-  list(folder = 'inbox', search = '', offset = 0, limit = 40) { return this.api.letters('list', { folder, search, offset, limit }); }
-  get(letterId, threadOffset = 0, threadLimit = 40) { return this.api.letters('get', { letterId, threadOffset, threadLimit }); }
+  list(folder = 'inbox', search = '', cursor = null, limit = 40) { return this.api.letters('list', { folder, search, cursor, limit }); }
+  get(letterId, threadCursor = null, threadLimit = 40) { return this.api.letters('get', { letterId, threadCursor, threadLimit }); }
   createDraft(data, options = {}) { return this.api.letters('draft:create', data, options); }
   saveDraft(data, options = {}) { return this.api.letters('draft:save', data, options); }
   sendDraft(data) { return this.api.letters('draft:send', data); }
@@ -13,7 +13,7 @@ export class LetterRepository {
   moveToTrash(letterId) { return this.api.letters('trash', { letterId }); }
   restore(letterId) { return this.api.letters('restore', { letterId }); }
   purge(letterId) { return this.api.letters('purge', { letterId }); }
-  notifications(offset = 0, limit = 30) { return this.api.letters('notifications', { offset, limit }); }
+  notifications(cursor = null, limit = 30) { return this.api.letters('notifications', { cursor, limit }); }
   markNotificationRead(notificationId) { return this.api.letters('notification:read', { notificationId }); }
   settings() { return this.api.letters('settings:get'); }
   saveSettings(settings) { return this.api.letters('settings:update', settings); }

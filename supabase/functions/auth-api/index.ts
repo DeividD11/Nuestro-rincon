@@ -198,7 +198,7 @@ async function registrationSessionResponse(
 async function resumeRegistrationFromReceipt(
   req: Request,
   headers: Headers,
-  input: { requestHash: string; invitationHash: string; username: string; recoveryCodeHash: string; password: string }
+  input: { requestHash: string; invitationHash: string; username: string; recoveryCodeHash: string; bundleHash?: string; password: string }
 ): Promise<Response | null> {
   const receipt = await selectOne<Record<string, unknown>>('registration_request_receipts', {
     select: 'request_hash,invitation_hash,username_normalized,recovery_code_hash,user_id',
@@ -211,6 +211,17 @@ async function resumeRegistrationFromReceipt(
     || String(receipt.recovery_code_hash) !== input.recoveryCodeHash
     || !receipt.user_id) {
     throw new Error('REGISTRATION_REQUEST_CONFLICT');
+  }
+
+  if (input.bundleHash) {
+    const bundleReceipt = await selectOne<Record<string, unknown>>('registration_recovery_bundle_receipts', {
+      select: 'request_hash,bundle_hash,code_count,user_id',
+      request_hash: `eq.${input.requestHash}`,
+      user_id: `eq.${receipt.user_id}`
+    });
+    if (!bundleReceipt || String(bundleReceipt.bundle_hash) !== input.bundleHash || Number(bundleReceipt.code_count) !== 10) {
+      throw new Error('REGISTRATION_REQUEST_CONFLICT');
+    }
   }
 
   const user = await selectOne<Record<string, unknown>>('app_users', {
@@ -247,11 +258,18 @@ Deno.serve(async (req: Request) => {
       const username = normalizeUsername(body.username);
       const password = String(body.password || '');
       const requestId = String(body.requestId || '').trim().toLowerCase();
-      const recoveryCode = normalizeRecoveryCode(body.recoveryCode);
+      const rawRecoveryCodes = body.recoveryCodes;
+      const isRecoveryBundle = Array.isArray(rawRecoveryCodes);
+      const recoveryCodes: string[] = isRecoveryBundle
+        ? (rawRecoveryCodes as unknown[]).map((code: unknown) => normalizeRecoveryCode(code))
+        : [normalizeRecoveryCode(body.recoveryCode)];
+      const recoveryCode = recoveryCodes[0] || '';
       if (password.length < 12 || password.length > 128) throw new Error('PASSWORD_POLICY');
       if (!displayName || displayName.length > 80 || !validUsername(username)) throw new Error('INVALID_INPUT');
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)
-        || recoveryCode.length !== 48) throw new Error('REGISTRATION_RECOVERY_HANDOFF_INVALID');
+        || recoveryCodes.length !== (isRecoveryBundle ? 10 : 1)
+        || recoveryCodes.some(code => code.length !== 48)
+        || new Set(recoveryCodes).size !== recoveryCodes.length) throw new Error('REGISTRATION_RECOVERY_HANDOFF_INVALID');
 
       const rawInvitation = String(body.invitationCode || '').slice(0, 256);
       const invitationHex = normalizeRegistrationInvitation(rawInvitation);
@@ -260,6 +278,12 @@ Deno.serve(async (req: Request) => {
         : await sha256Hex(`registration-invite-invalid:v1:${rawInvitation.normalize('NFKC').trim().toUpperCase()}`);
       const requestHash = await sha256Hex(`registration-request:v1:${requestId}`);
       const recoveryCodeHash = await sha256Hex(recoveryCode);
+      const recoveryCodeHashes = isRecoveryBundle
+        ? await Promise.all(recoveryCodes.map(code => sha256Hex(code)))
+        : [];
+      const recoveryBundleHash = isRecoveryBundle
+        ? await sha256Hex(`registration-recovery-bundle:v1:${recoveryCodeHashes.join(':')}`)
+        : undefined;
 
       const ipHash = await hmacSha256Hex(`registration-invite-ip:v1:${invitationClientAddress(req)}`);
       const inviteAttempt = await rpc<Record<string, unknown>>('start_app_registration_invite_attempt', {
@@ -292,7 +316,8 @@ Deno.serve(async (req: Request) => {
         // Los reintentos idempotentes también pasan por el limitador de intentos.
         // No se permite usar la consulta del recibo para ensayar contraseñas sin límite.
         const resumed = await resumeRegistrationFromReceipt(req, headers, {
-          requestHash, invitationHash, username, recoveryCodeHash, password
+          requestHash, invitationHash, username, recoveryCodeHash,
+          ...(recoveryBundleHash ? { bundleHash: recoveryBundleHash } : {}), password
         });
         if (resumed) {
           await completeInviteAttempt('accepted', 'idempotent_registration_recovered');
@@ -307,7 +332,8 @@ Deno.serve(async (req: Request) => {
           // Otra petición idéntica pudo consumir la invitación entre el primer
           // lookup y este chequeo. Comprueba de nuevo el recibo antes de fallar.
           const concurrentResume = await resumeRegistrationFromReceipt(req, headers, {
-            requestHash, invitationHash, username, recoveryCodeHash, password
+            requestHash, invitationHash, username, recoveryCodeHash,
+            ...(recoveryBundleHash ? { bundleHash: recoveryBundleHash } : {}), password
           });
           if (concurrentResume) {
             await completeInviteAttempt('accepted', 'idempotent_registration_recovered');
@@ -325,17 +351,29 @@ Deno.serve(async (req: Request) => {
           }, 429, headers);
         }
 
-        const registered = await rpc<Record<string, unknown>>('register_app_user_with_invite_idempotent', {
-          p_request_hash: requestHash,
-          p_invitation_hash: invitationHash,
-          p_display_name: displayName,
-          p_username: username,
-          p_password_hash: await hashPassword(password),
-          p_recovery_code_hash: recoveryCodeHash,
-          p_now: nowIso()
-        });
+        const registered = isRecoveryBundle
+          ? await rpc<Record<string, unknown>>('register_app_user_with_invite_idempotent_bundle', {
+              p_request_hash: requestHash,
+              p_invitation_hash: invitationHash,
+              p_display_name: displayName,
+              p_username: username,
+              p_password_hash: await hashPassword(password),
+              p_bundle_hash: recoveryBundleHash,
+              p_code_hashes: recoveryCodeHashes,
+              p_now: nowIso()
+            })
+          : await rpc<Record<string, unknown>>('register_app_user_with_invite_idempotent', {
+              p_request_hash: requestHash,
+              p_invitation_hash: invitationHash,
+              p_display_name: displayName,
+              p_username: username,
+              p_password_hash: await hashPassword(password),
+              p_recovery_code_hash: recoveryCodeHash,
+              p_now: nowIso()
+            });
 
         const isCreated = registered.status === 'created' || registered.status === 'already_created';
+        let recoveryCodeCurrent = true;
         if (registered.status === 'already_created') {
           const existingUser = await selectOne<Record<string, unknown>>('app_users', {
             select: 'id,password_hash,status',
@@ -345,6 +383,10 @@ Deno.serve(async (req: Request) => {
           if (!existingUser || !await verifyPassword(password, String(existingUser.password_hash || ''))) {
             throw new Error('REGISTRATION_RETRY_CREDENTIALS_INVALID');
           }
+          const currentCode = await selectOne<Record<string, unknown>>('user_recovery_codes', {
+            select: 'id', user_id: `eq.${registered.user_id}`, code_hash: `eq.${recoveryCodeHash}`, used_at: 'is.null'
+          });
+          recoveryCodeCurrent = Boolean(currentCode);
         }
         try {
           await rpc('complete_app_login_attempt', {
@@ -374,7 +416,7 @@ Deno.serve(async (req: Request) => {
         // Incluso si crear la sesión falla, la cuenta ya está creada y el
         // navegador conserva el código en localStorage hasta que la persona
         // confirme que lo guardó. No se presenta como fallo de alta.
-        return await registrationSessionResponse(req, headers, String(registered.user_id), true);
+        return await registrationSessionResponse(req, headers, String(registered.user_id), recoveryCodeCurrent);
       } catch (error) {
         if (!inviteAttemptCompleted) {
           try { await completeInviteAttempt('rejected', inviteAttemptReason(error)); }
@@ -551,6 +593,47 @@ Deno.serve(async (req: Request) => {
         rotated: true,
         alreadyRotated: result.status === 'already_rotated',
         message: 'El nuevo código de recuperación está activo. Todos los códigos anteriores quedaron invalidados.'
+      }, 200, headers);
+    }
+
+    if (action === 'recovery-codes:rotate') {
+      const session = await requireSession(req);
+      const currentPassword = String(body.currentPassword || '');
+      const rawCodes = Array.isArray(body.recoveryCodes) ? body.recoveryCodes : [];
+      const recoveryCodes = rawCodes.map(normalizeRecoveryCode);
+      const requestId = String(body.requestId || '').trim().toLowerCase();
+      if (!currentPassword || currentPassword.length > 128) throw new Error('CURRENT_PASSWORD_INVALID');
+      if (recoveryCodes.length !== 10 || recoveryCodes.some(code => code.length !== 48)
+        || new Set(recoveryCodes).size !== 10
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+        throw new Error('RECOVERY_BUNDLE_INVALID');
+      }
+      const current = await selectOne<Record<string, unknown>>('app_users', {
+        select: 'id,password_hash,status', id: `eq.${session.userId}`, status: 'eq.active'
+      });
+      if (!current || !await verifyPassword(currentPassword, String(current.password_hash || ''))) {
+        throw new Error('CURRENT_PASSWORD_INVALID');
+      }
+      const codeHashes = await Promise.all(recoveryCodes.map(code => sha256Hex(code)));
+      const bundleHash = await sha256Hex(`recovery-code-bundle:v1:${[...codeHashes].sort().join(':')}`);
+      const result = await rpc<Record<string, unknown>>('rotate_app_recovery_codes_bundle', {
+        p_user_id: session.userId,
+        p_session_id: session.sessionId,
+        p_request_hash: await sha256Hex(`recovery-code-bundle-request:v1:${requestId}`),
+        p_bundle_hash: bundleHash,
+        p_code_hashes: codeHashes,
+        p_now: nowIso()
+      });
+      if (result.status === 'session_invalid') throw new Error('SESSION_EXPIRED');
+      if (result.status === 'request_conflict') throw new Error('RECOVERY_BUNDLE_CONFLICT');
+      if (result.status === 'request_superseded') throw new Error('RECOVERY_BUNDLE_SUPERSEDED');
+      if (result.status !== 'rotated' && result.status !== 'already_rotated') throw new Error('RECOVERY_BUNDLE_ROTATION_FAILED');
+      return jsonResponse(req, {
+        ok: true,
+        rotated: true,
+        alreadyRotated: result.status === 'already_rotated',
+        codeCount: 10,
+        message: 'Los diez códigos de respaldo están activos. Cada uno se puede utilizar una sola vez.'
       }, 200, headers);
     }
 

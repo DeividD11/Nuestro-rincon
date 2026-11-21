@@ -66,7 +66,7 @@ export class NavigationController {
       if (previousRoute !== route && ['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
         // No mostrar ni un frame de la lista anterior mientras llega el nuevo buzón.
         this.state.letters = [];
-        this.state.pagination = { offset: 0, nextOffset: 0, total: 0, limit: 40, hasMore: false, loading: false };
+        this.state.pagination = { cursor: null, loadedCount: 0, limit: 40, hasMore: false, loading: false };
       }
       this.state.route = route;
       this.state.routeError = null;
@@ -191,9 +191,9 @@ export class NavigationController {
         return { dashboard, notifications };
       }
       if (['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
-        return { letters: await this.repository.list(route, this.state.search, 0, 40) };
+        return { letters: await this.repository.list(route, this.state.search, null, 40) };
       }
-      if (route === 'notifications') return { notifications: await this.repository.notifications(0, 30) };
+      if (route === 'notifications') return { notifications: await this.repository.notifications(null, 30) };
       if (route === 'settings') {
         const [settings, sessions, invitation] = await Promise.all([
           this.repository.settings(), this.repository.sessions(), this.session.api.auth('invitation:status')
@@ -208,22 +208,25 @@ export class NavigationController {
         this.state.dashboard = data.dashboard || this.state.dashboard;
         this.state.notifications = data.notifications?.items || this.state.notifications;
         this.state.notificationPagination = {
-          offset: data.notifications?.offset || 0, nextOffset: data.notifications?.nextOffset || 0,
-          total: data.notifications?.total || 0, limit: data.notifications?.limit || 30,
+          cursor: data.notifications?.nextCursor || null,
+          loadedCount: Number(data.notifications?.loaded ?? data.notifications?.items?.length ?? 0),
+          limit: data.notifications?.limit || 30,
           hasMore: Boolean(data.notifications?.hasMore), loading: false
         };
       } else if (['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
         this.state.letters = this.uniqueLetters(data.letters?.items || []);
         this.state.pagination = {
-          offset: data.letters?.offset || 0, nextOffset: data.letters?.nextOffset || 0,
-          total: data.letters?.total || 0, limit: data.letters?.limit || 40,
+          cursor: data.letters?.nextCursor || null,
+          loadedCount: Number(data.letters?.loaded ?? data.letters?.items?.length ?? 0),
+          limit: data.letters?.limit || 40,
           hasMore: Boolean(data.letters?.hasMore), loading: false
         };
       } else if (route === 'notifications') {
         this.state.notifications = data.notifications?.items || [];
         this.state.notificationPagination = {
-          offset: data.notifications?.offset || 0, nextOffset: data.notifications?.nextOffset || 0,
-          total: data.notifications?.total || 0, limit: data.notifications?.limit || 30,
+          cursor: data.notifications?.nextCursor || null,
+          loadedCount: Number(data.notifications?.loaded ?? data.notifications?.items?.length ?? 0),
+          limit: data.notifications?.limit || 30,
           hasMore: Boolean(data.notifications?.hasMore), loading: false
         };
       } else if (route === 'settings') {
@@ -304,19 +307,21 @@ export class NavigationController {
       const route = this.state.route;
       const pagination = this.state.pagination;
       if (!['inbox','sent','drafts','favorites','archive','trash'].includes(route)
-        || !pagination?.hasMore || pagination.loading) return;
+        || !pagination?.hasMore || pagination.loading || !pagination.cursor) return;
       const userId = this.session?.user?.id;
       const search = this.state.search;
-      const nextOffset = pagination.nextOffset;
+      const cursor = pagination.cursor;
       this.state.pagination = { ...pagination, loading: true };
       this.renderCurrentRoute();
       try {
-        const page = await this.repository.list(route, search, nextOffset, pagination.limit || 40);
+        const page = await this.repository.list(route, search, cursor, pagination.limit || 40);
         if (this.state.route !== route || this.session?.user?.id !== userId || this.state.search !== search) return;
+        const priorCount = Number(pagination.loadedCount || this.state.letters.length);
         this.state.letters = this.uniqueLetters([...(this.state.letters || []), ...(page.items || [])]);
         this.state.pagination = {
-          offset: page.offset || nextOffset, nextOffset: page.nextOffset ?? nextOffset + (page.items || []).length,
-          total: page.total || 0, limit: page.limit || pagination.limit || 40,
+          cursor: page.nextCursor || null,
+          loadedCount: priorCount + (page.items || []).length,
+          limit: page.limit || pagination.limit || 40,
           hasMore: Boolean(page.hasMore), loading: false
         };
         const scrollY = window.scrollY;
@@ -331,19 +336,20 @@ export class NavigationController {
 
     async loadMoreNotifications() {
       const pagination = this.state.notificationPagination;
-      if (this.state.route !== 'notifications' || !pagination?.hasMore || pagination.loading) return;
+      if (this.state.route !== 'notifications' || !pagination?.hasMore || pagination.loading || !pagination.cursor) return;
       const userId = this.session?.user?.id;
-      const nextOffset = pagination.nextOffset;
+      const cursor = pagination.cursor;
       this.state.notificationPagination = { ...pagination, loading: true };
       this.renderCurrentRoute();
       try {
-        const page = await this.repository.notifications(nextOffset, pagination.limit || 30);
+        const page = await this.repository.notifications(cursor, pagination.limit || 30);
         if (this.state.route !== 'notifications' || this.session?.user?.id !== userId) return;
         const merged = [...(this.state.notifications || []), ...(page.items || [])];
         this.state.notifications = [...new Map(merged.filter(item => item?.id).map(item => [String(item.id), item])).values()];
         this.state.notificationPagination = {
-          offset: page.offset || nextOffset, nextOffset: page.nextOffset ?? nextOffset + (page.items || []).length,
-          total: page.total || 0, limit: page.limit || pagination.limit || 30,
+          cursor: page.nextCursor || null,
+          loadedCount: Number(pagination.loadedCount || 0) + (page.items || []).length,
+          limit: page.limit || pagination.limit || 30,
           hasMore: Boolean(page.hasMore), loading: false
         };
         const scrollY = window.scrollY;
@@ -361,11 +367,11 @@ export class NavigationController {
       if (this.state.route !== 'letter' || !bundle?.threadHasMore || bundle.threadLoading) return;
       const userId = this.session?.user?.id;
       const letterId = String(bundle.letter?.id || '');
-      const nextOffset = Number(bundle.threadNextOffset || 0);
+      const nextCursor = bundle.threadNextCursor || null;
       this.state.selectedLetter = { ...bundle, threadLoading: true };
       this.renderCurrentRoute();
       try {
-        const page = await this.repository.get(letterId, nextOffset, 40);
+        const page = await this.repository.get(letterId, nextCursor, 40);
         if (this.state.route !== 'letter' || this.session?.user?.id !== userId
           || String(this.state.selectedLetter?.letter?.id || '') !== letterId) return;
         const previousThread = this.state.selectedLetter.thread || [];
@@ -376,8 +382,8 @@ export class NavigationController {
           .sort((a, b) => new Date(String(a.sent_at || a.created_at)).getTime()
             - new Date(String(b.sent_at || b.created_at)).getTime() || String(a.id).localeCompare(String(b.id)));
         this.state.selectedLetter = {
-          ...this.state.selectedLetter, thread, threadTotal: page.threadTotal ?? thread.length,
-          threadHasMore: Boolean(page.threadHasMore), threadNextOffset: page.threadNextOffset ?? nextOffset + 40,
+          ...this.state.selectedLetter, thread,
+          threadHasMore: Boolean(page.threadHasMore), threadNextCursor: page.threadNextCursor || null,
           threadLoadedOlderCount: Math.min(thread.length, Number(bundle.threadLoadedOlderCount || 0) + newlyLoadedOlderCount),
           threadLoading: false
         };

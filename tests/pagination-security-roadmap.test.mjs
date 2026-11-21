@@ -55,9 +55,9 @@ test('hilos y notificaciones admiten páginas progresivas con orden fecha e ID',
   const api = await read('../supabase/functions/letters-api/index.ts');
   const controller = await readControllerSource();
   const view = await read('../assets/js/views/app-view.js');
-  assert.match(core, /export async function selectPageRows/);
-  assert.match(api, /order: 'sent_at\.desc,id\.desc'/);
-  assert.match(api, /order: 'created_at\.desc,id\.desc'/);
+  assert.match(core, /export async function selectCursorPageRows/);
+  assert.match(api, /selectCursorPageRows<Record<string, unknown>>\('letters',[\s\S]*'sent_at'/);
+  assert.match(api, /selectCursorPageRows<Record<string, unknown>>\('notifications',[\s\S]*'created_at'/);
   assert.match(api, /threadHasMore/);
   assert.match(controller, /async loadMoreLetters\(/);
   assert.match(controller, /async loadMoreNotifications\(/);
@@ -74,4 +74,40 @@ test('la documentación E2EE no presenta como cifrado un contenido que sigue en 
   assert.match(doc, /frase de cifrado independiente/);
   assert.match(doc, /búsqueda textual tendrá que ejecutarse en el cliente/);
   assert.match(doc, /La pérdida simultánea de la clave privada y de su respaldo/);
+});
+
+
+test('las carpetas usan paginación keyset fecha+UUID sin COUNT exacto ni OFFSET', async () => {
+  const migration = await read('../supabase/migrations/20261121210000_cursor_based_letter_pagination.sql');
+  const api = await read('../supabase/functions/letters-api/index.ts');
+  const core = await read('../supabase/functions/_shared/core.ts');
+  const repository = await read('../assets/js/repositories/letter-repository.js');
+  assert.match(migration, /create or replace function public\.list_user_letters_cursor/);
+  assert.match(migration, /\(e\.sort_at, e\.id\) < \(p_cursor_sort_at, p_cursor_id\)/);
+  assert.match(migration, /limit p_limit \+ 1/);
+  assert.doesNotMatch(migration, /eligible as materialized/i);
+  assert.match(migration, /select count\(\*\) > p_limit from page_candidates/);
+  assert.doesNotMatch(migration, /offset p_offset/i);
+  assert.match(migration, /revoke execute[\s\S]*from public, anon, authenticated/i);
+  assert.match(migration, /grant execute[\s\S]*to service_role/i);
+  assert.match(core, /selectCursorPageRows/);
+  assert.match(api, /rpc<unknown>\('list_user_letters_cursor'/);
+  assert.match(api, /selectCursorPageRows<Record<string, unknown>>\('notifications'/);
+  assert.match(repository, /list\(folder = 'inbox', search = '', cursor = null/);
+  assert.doesNotMatch(migration, /count\(\*\)::bigint as total/);
+  assert.doesNotMatch(api.slice(api.indexOf("case 'notifications':"), api.indexOf("case 'notification:read':")), /count=exact|offset/);
+});
+
+
+test('el cliente mantiene cursores y ya no presenta totales exactos por página', async () => {
+  const navigation = await read('../assets/js/controllers/navigation-controller.js');
+  const view = await read('../assets/js/views/app-view.js');
+  const notification = await read('../assets/js/controllers/notification-controller.js');
+  assert.match(navigation, /const cursor = pagination\.cursor/);
+  assert.match(navigation, /repository\.list\(route, search, cursor/);
+  assert.match(navigation, /repository\.notifications\(cursor/);
+  assert.match(navigation, /threadNextCursor/);
+  assert.match(view, /loaded} cargadas/);
+  assert.doesNotMatch(view, /loaded} de \$\{total/);
+  assert.match(notification, /cursor: result\.nextCursor/);
 });
