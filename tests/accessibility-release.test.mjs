@@ -193,6 +193,10 @@ test('la auditoría de contraste cubre las superficies reales de ambos temas y e
   const workflow = await read('../.github/workflows/pages.yml');
   assert.match(contrast, /panel lateral oscuro/);
   assert.match(contrast, /panel lateral claro/);
+  assert.match(contrast, /texto de identificación de la barra superior/);
+  const appCss = await read('../assets/css/app.css');
+  assert.match(appCss, /\.topbar-kicker\s*\{[^}]*color:\s*var\(--muted\)/);
+  assert.doesNotMatch(appCss, /\.topbar-kicker\s*\{[^}]*color:\s*#a18e84/i);
   assert.match(workflow, /npm run check:contrast/);
   const result = spawnSync(process.execPath, ['tools/contrast-audit.mjs'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);

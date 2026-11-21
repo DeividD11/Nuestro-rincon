@@ -61,7 +61,8 @@ function verify(themeName, variables, buttonBackgrounds) {
     ['texto secundario sobre fondo', variables.muted, variables.paper, 4.5],
     ['texto secundario sobre superficie', variables.muted, variables['paper-2'], 4.5],
     ['texto suave sobre superficie', variables['text-soft'], variables['paper-2'], 4.5],
-    ['texto de navegación/acento', variables['accent-deep'], variables['paper-2'], 4.5]
+    ['texto de navegación/acento', variables['accent-deep'], variables['paper-2'], 4.5],
+    ['texto de identificación de la barra superior', variables.muted, themeName === 'oscuro' ? '#24211f' : '#fefcf8', 4.5]
   ];
   for (const [label, foreground, background, minimum] of textPairs) {
     const value = contrast(foreground, background);

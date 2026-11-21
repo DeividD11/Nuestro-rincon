@@ -75,3 +75,5 @@ Para ejecutar toda la matriz de recorridos de navegador con datos de prueba aisl
 ```bash
 npm run test:e2e
 ```
+
+La identificación discreta de la barra superior utiliza el color secundario del tema; su contraste se comprueba automáticamente en ambos temas (mínimo 4,5:1).
