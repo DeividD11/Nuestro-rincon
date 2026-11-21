@@ -49,6 +49,17 @@ export async function sha256Hex(value: string): Promise<string> {
   return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// HMAC con la credencial privada inyectada por Supabase. Se usa para
+// anonimizar la IP de intentos de invitación sin almacenar la dirección real.
+export async function hmacSha256Hex(value: string): Promise<string> {
+  const secret = getSecretKey().key;
+  const key = await crypto.subtle.importKey(
+    'raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value)));
+  return [...signature].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export async function hashPassword(password: string): Promise<string> {
   if (password.length < 12 || password.length > 128) throw new Error('PASSWORD_POLICY');
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -132,6 +143,60 @@ export async function dbRequest<T = unknown>(path: string, init: RequestInit = {
 
 export function selectRows<T = Record<string, unknown>>(table: string, params: Record<string, string>): Promise<T[]> {
   return dbRequest<T[]>(`${table}?${new URLSearchParams(params).toString()}`);
+}
+
+export type PageRows<T> = {
+  items: T[];
+  total: number | null;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  nextOffset: number;
+};
+
+/** Consulta paginada PostgREST con recuento exacto y ordenación definida por el llamador. */
+export async function selectPageRows<T = Record<string, unknown>>(
+  table: string,
+  params: Record<string, string>,
+  offset: number,
+  limit: number
+): Promise<PageRows<T>> {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('PAGINATION_INPUT_INVALID');
+  }
+  const queryParams = new URLSearchParams(params);
+  queryParams.delete('limit');
+  queryParams.delete('offset');
+  const headers = dbHeaders({
+    Range: `${offset}-${offset + limit - 1}`,
+    'Range-Unit': 'items',
+    Prefer: 'count=exact'
+  });
+  headers.set('Cache-Control', 'no-store');
+  const response = await fetch(supabaseUrl(`${table}?${queryParams.toString()}`), {
+    method: 'GET', headers, cache: 'no-store'
+  });
+  const raw = await response.text();
+  let parsed: unknown = null;
+  try { parsed = raw ? JSON.parse(raw) : []; } catch { parsed = raw; }
+  if (!response.ok) {
+    const message = typeof parsed === 'object' && parsed && 'message' in parsed
+      ? String((parsed as Record<string, unknown>).message)
+      : 'Database operation failed';
+    throw new Error(`DATABASE_${response.status}:${message}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error('DATABASE_PAGE_RESPONSE_INVALID');
+  const contentRange = response.headers.get('Content-Range') || '';
+  const totalPart = contentRange.split('/').at(-1) || '';
+  const parsedTotal = totalPart === '*' ? NaN : Number(totalPart);
+  const total = Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null;
+  const items = parsed as T[];
+  const nextOffset = offset + items.length;
+  return {
+    items, total, offset, limit,
+    hasMore: total === null ? items.length === limit : nextOffset < total,
+    nextOffset
+  };
 }
 
 export async function selectOne<T = Record<string, unknown>>(table: string, params: Record<string, string>): Promise<T | null> {
@@ -290,6 +355,20 @@ export function errorStatus(error: unknown): { status: number; code: string; mes
   }
   if (code === 'PASSWORD_POLICY') {
     return { status: 400, code, message: 'La contraseña debe tener entre 12 y 128 caracteres.' };
+  }
+  if (code === 'REGISTRATION_RETRY_CREDENTIALS_INVALID') {
+    return { status: 401, code, message: 'La cuenta ya existe, pero la contraseña no coincide. Introduce la contraseña utilizada durante el registro.' };
+  }
+  if (code === 'REGISTRATION_REQUEST_CONFLICT' || code === 'REGISTRATION_REQUEST_UNAVAILABLE'
+    || code === 'REGISTRATION_REQUEST_ID_INVALID' || code === 'ACCOUNT_EXISTS'
+    || code === 'ACCOUNT_LIMIT_REACHED' || code === 'INVITATION_INVALID'
+    || code === 'INVITATION_ALREADY_PENDING' || code === 'INVITATION_BOOTSTRAP_REQUIRED'
+    || code === 'RECOVERY_ROTATION_CONFLICT' || code === 'RECOVERY_ROTATION_SUPERSEDED') {
+    return { status: 409, code, message: 'La operación ya no puede continuar con los datos de este intento. Revisa la invitación, la cuenta o vuelve a iniciar la operación.' };
+  }
+  if (code === 'REGISTRATION_RECOVERY_HANDOFF_INVALID' || code === 'RECOVERY_ROTATION_INVALID'
+    || code === 'CURRENT_PASSWORD_INVALID') {
+    return { status: 400, code, message: 'Los datos de seguridad no son válidos. Comprueba la contraseña y vuelve a intentarlo.' };
   }
   if (code === 'INVALID_BODY' || code === 'INVALID_INPUT') {
     return { status: 400, code, message: 'Los datos enviados no son válidos.' };

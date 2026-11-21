@@ -1,0 +1,31 @@
+name: Security database tests (isolated Supabase)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pgtap:
+    runs-on: ubuntu-latest
+    env:
+      NR_DB_TEST_PROJECT_REF: ${{ secrets.NR_DB_TEST_PROJECT_REF }}
+      NR_TEST_DATABASE_URL: ${{ secrets.NR_TEST_DATABASE_URL }}
+      NR_TEST_CONFIRM_ISOLATED: 'YES'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 3.0.0
+      - name: Validate isolated database URL
+        env:
+          PRODUCTION_PROJECT_REF: tiqbmuubpbmxqvtkcdhq
+        run: |
+          node --input-type=module -e "const ref=process.env.NR_DB_TEST_PROJECT_REF; const value=process.env.NR_TEST_DATABASE_URL; if (!ref || !value || ref===process.env.PRODUCTION_PROJECT_REF) process.exit(1); const u=new URL(value); if (u.hostname !== 'db.'+ref+'.supabase.co' || u.protocol !== 'postgresql:') process.exit(1);"
+      - name: Run pgTAP security tests
+        run: npm run test:db

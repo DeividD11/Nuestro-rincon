@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
+import { readControllerSource } from './helpers/controller-source.mjs';
 
 test('la sesión revocada desaparece inmediatamente y se vuelve a verificar en Configuración', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /this\.state\.sessions = \(this\.state\.sessions \|\| \[\]\)\.filter\(item => item\.id !== sessionId\)/);
   assert.match(controller, /async refreshSessions\(\)/);
   assert.match(controller, /checkCurrentSession\(\)/);
-  assert.match(controller, /setInterval\([\s\S]*?10000\)/);
+  assert.match(controller, /activeIntervalMs: 5 \* 60_000/);
+  assert.match(controller, /idleIntervalMs: 15 \* 60_000/);
   assert.match(controller, /auth\('session'\)/);
   assert.match(controller, /BroadcastChannel\('nuestro-rincon-session-events'\)/);
   assert.match(controller, /postMessage\(\{ type: 'session-revoked', sessionId \}\)/);
@@ -18,7 +20,7 @@ test('la sesión revocada desaparece inmediatamente y se vuelve a verificar en C
 
 test('la eliminación de cuenta requiere contraseña y confirmación reforzada', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const auth = await read('../supabase/functions/auth-api/index.ts');
   const migrations = await read('../supabase/migrations/20261117033226_secure_account_deletion.sql');
   assert.match(view, /id="delete-account-form"/);
@@ -36,7 +38,7 @@ test('la eliminación de cuenta requiere contraseña y confirmación reforzada',
 });
 
 test('el borrador se respalda localmente al salir y se reanuda al volver a abrir la app', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const localDrafts = await read('../assets/js/services/local-drafts.js');
   const api = await read('../assets/js/services/api-client.js');
   assert.match(controller, /persistEmergencyDraft\(/);
@@ -54,10 +56,11 @@ test('el borrador se respalda localmente al salir y se reanuda al volver a abrir
 });
 
 test('las escrituras de borradores se serializan y un ID remoto desaparecido se recupera sin borrar la copia local', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const api = await read('../assets/js/services/api-client.js');
-  assert.match(controller, /this\.draftQueues = new Map\(\)/);
-  assert.match(controller, /const previous = this\.draftQueues\.get\(queueKey\)/);
+  assert.match(controller, /this\.draftSyncQueue = new DraftSyncQueue\(\)/);
+  assert.match(controller, /this\.draftSyncQueue\.enqueue\(queueKey/);
+  assert.doesNotMatch(controller, /this\.draftQueues = new Map\(\)/);
   assert.match(controller, /if \(error\.status !== 404 && error\.code !== 'DRAFT_NOT_FOUND'\) throw error/);
   assert.match(controller, /const replacementRequestId = crypto\.randomUUID\(\)/);
   assert.match(controller, /No se pudo recuperar la copia local como un nuevo borrador/);
@@ -81,19 +84,20 @@ test('el guardado automático nunca restaura un borrador que ya está en Papeler
   assert.match(letters, /case 'restore':/);
 });
 
-test('descartar un borrador es de una sola pulsación y espera sincronizaciones antes de moverlo', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+test('descartar un borrador es de una sola pulsación y retira la tarjeta sin esperar la cola', async () => {
+  const controller = await readControllerSource();
   const view = await read('../assets/js/views/app-view.js');
   assert.match(controller, /if \(!isDraft && !\(await showConfirmDialog\(/);
   assert.match(controller, /this\.discardedDraftIds\.add\(letterId\)/);
-  assert.match(controller, /await this\.waitForDraftSyncQueue\(\)/);
-  assert.match(controller, /await this\.repository\.moveToTrash\(letterId\)/);
-  assert.match(controller, /this\.state\.letters = \(this\.state\.letters \|\| \[\]\)\.filter\(item => item\.id !== letterId\)/);
+  assert.doesNotMatch(controller, /waitForDraftSyncQueue/);
+  const discard = controller.slice(controller.indexOf('async discardLetter('), controller.indexOf('  queueDraftSync(snapshot'));
+  assert.ok(discard.indexOf('this.state.letters = (this.state.letters || []).filter') < discard.indexOf('await this.repository.moveToTrash'));
+  assert.match(discard, /this\.restoreLetterState\(before\)/);
   assert.match(view, /data-letter-status="\$\{escapeHtml\(item\.status\)\}"/);
 });
 
 test('los guardados se serializan por cuenta y descartan copias locales de una carta en Papelera', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const localDrafts = await read('../assets/js/services/local-drafts.js');
   assert.match(controller, /draftSyncQueueKey\(\)/);
   assert.match(controller, /const queueKey = this\.draftSyncQueueKey\(\)/);
@@ -120,9 +124,10 @@ test('la vinculación inicial de destinatario está permitida una sola vez y no 
   assert.match(migration, /LETTER_IDENTITY_IMMUTABLE/);
 });
 
-test('el diseño cubre los siete anchos requeridos y elimina el enlace de salto incoherente', async () => {
+test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto coherente', async () => {
   const css = await read('../assets/css/app.css');
   const html = await read('../index.html');
+  const appView = await read('../assets/js/views/app-view.js');
   const widths = [
     { width: 320, rule: /@media \(max-width: 360px\)/ },
     { width: 375, rule: /@media \(max-width: 720px\)/ },
@@ -133,14 +138,14 @@ test('el diseño cubre los siete anchos requeridos y elimina el enlace de salto 
     { width: 2560, rule: /@media \(min-width: 2200px\)/ }
   ];
   for (const item of widths) assert.match(css, item.rule, `Falta una regla para ${item.width}px`);
-  assert.doesNotMatch(html, /Saltar al contenido|skip-link/i);
-  assert.doesNotMatch(css, /\.skip-link/);
+  assert.match(appView, /class="skip-link" href="#main-content"/);
+  assert.match(css, /\.skip-link:focus/);
 });
 
 
 test('las claves antiguas de borradores purgados generan una nueva carta idempotente', async () => {
   const sql = await read('../supabase/migrations/20261117041103_idempotent_recovery_for_purged_drafts.sql');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(sql, /v_letter\.status <> 'purged'/);
   assert.match(sql, /nuestro-rincon-purged-draft/);
   assert.match(sql, /v_effective_request_id/);
@@ -155,13 +160,14 @@ test('la cuenta eliminada libera uno de los dos espacios de registro', async () 
 });
 
 test('la sesión revocada se valida globalmente y las pestañas comparten el evento de revocación', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const session = await read('../assets/js/services/session-service.js');
   const auth = await read('../supabase/functions/auth-api/index.ts');
   assert.match(controller, /async checkCurrentSession\(\)/);
   assert.match(controller, /this\.session\.api\.auth\('session'\)/);
   assert.match(controller, /this\.forceLogout\(\)/);
-  assert.match(controller, /setInterval\([\s\S]*?10000\)/);
+  assert.match(controller, /activeIntervalMs: 5 \* 60_000/);
+  assert.match(controller, /idleIntervalMs: 15 \* 60_000/);
   assert.match(controller, /BroadcastChannel\('nuestro-rincon-session-events'\)/);
   assert.match(session, /this\.sessionId = payload\.sessionId/);
   assert.match(session, /this\.sessionId = null/);
@@ -169,7 +175,7 @@ test('la sesión revocada se valida globalmente y las pestañas comparten el eve
 });
 
 test('la copia local se actualiza en cada pulsación y se hidrata sin bloquear la sección de escritura', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /this\.persistLocalDraft\(\)\.catch\(\(\) => \{\}\)/);
   assert.match(controller, /hydrateEditorFromLocal\(/);
   assert.match(controller, /readEmergencyDraft\(draftKey\)/);
@@ -178,7 +184,7 @@ test('la copia local se actualiza en cada pulsación y se hidrata sin bloquear l
 
 
 test('la sincronización de un borrador no elimina la copia de emergencia de otra carta abierta', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /emergencyLatest && !\(this\.state\.editor && this\.state\.route === 'write' && !currentMatches\)/);
   assert.match(controller, /No borres la emergencia de una carta diferente que se esté editando/);
 });

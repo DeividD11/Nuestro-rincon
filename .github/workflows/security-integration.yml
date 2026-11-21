@@ -1,0 +1,36 @@
+name: Two-account security integration (isolated Supabase)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      NR_TEST_SUPABASE_URL: ${{ secrets.NR_TEST_SUPABASE_URL }}
+      NR_TEST_PROJECT_REF: ${{ secrets.NR_TEST_PROJECT_REF }}
+      NR_TEST_PUBLISHABLE_KEY: ${{ secrets.NR_TEST_PUBLISHABLE_KEY }}
+      NR_TEST_CONFIRM_ISOLATED: 'YES'
+      NR_TEST_BOOTSTRAP_INVITATION: ${{ secrets.NR_TEST_BOOTSTRAP_INVITATION }}
+      NR_TEST_ACCOUNT_A_USERNAME: ${{ secrets.NR_TEST_ACCOUNT_A_USERNAME }}
+      NR_TEST_ACCOUNT_A_PASSWORD: ${{ secrets.NR_TEST_ACCOUNT_A_PASSWORD }}
+      NR_TEST_ACCOUNT_A_DISPLAY_NAME: ${{ secrets.NR_TEST_ACCOUNT_A_DISPLAY_NAME }}
+      NR_TEST_ACCOUNT_B_USERNAME: ${{ secrets.NR_TEST_ACCOUNT_B_USERNAME }}
+      NR_TEST_ACCOUNT_B_PASSWORD: ${{ secrets.NR_TEST_ACCOUNT_B_PASSWORD }}
+      NR_TEST_ACCOUNT_B_DISPLAY_NAME: ${{ secrets.NR_TEST_ACCOUNT_B_DISPLAY_NAME }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate isolated project
+        env:
+          PRODUCTION_PROJECT_REF: tiqbmuubpbmxqvtkcdhq
+        run: |
+          node --input-type=module -e "const ref=process.env.NR_TEST_PROJECT_REF; const value=process.env.NR_TEST_SUPABASE_URL; if (!ref || !value || ref===process.env.PRODUCTION_PROJECT_REF || process.env.NR_TEST_CONFIRM_ISOLATED!=='YES') process.exit(1); const u=new URL(value); if (u.hostname !== ref+'.supabase.co' || u.protocol !== 'https:') process.exit(1);"
+      - name: Run two-account security scenarios
+        run: npm run test:integration

@@ -1,11 +1,26 @@
-# Instantánea del esquema remoto
+# Instantánea y reconstrucción del esquema remoto
 
-Esta carpeta se reserva para un dump SQL del esquema existente. El proyecto `tiqbmuubpbmxqvtkcdhq` ya tiene un historial de migraciones y tablas de correspondencia/autenticación; no se debe tratar como una base Supabase vacía.
+El proyecto `tiqbmuubpbmxqvtkcdhq` ya existe y tiene historial, datos y funciones desplegadas. No trates sus migraciones como si fueran una base vacía.
 
-Para generar una instantánea desde un entorno con Supabase CLI autenticada:
+## Exportar el esquema actual (sin datos)
+
+Con Supabase CLI v3 autenticada, desde la raíz del repositorio:
 
 ```bash
-supabase db dump --linked --schema public --file supabase/schema/remote-public.sql
+supabase login
+supabase link --project-ref tiqbmuubpbmxqvtkcdhq
+supabase migration list --remote
+supabase db dump --remote --schema public --file supabase/schema/remote-public.sql
 ```
 
-Revisa el contenido antes de compartirlo. El dump puede contener detalles internos del proyecto. No lo ejecutes a ciegas contra producción ni lo uses como sustituto de una copia de seguridad.
+El dump estándar exporta el esquema, no los datos ni los roles personalizados, y excluye esquemas administrados por Supabase y extensiones. Revisa el resultado y las ACL/default privileges antes de restaurarlo en un proyecto nuevo. No uses un dump de esquema como copia de datos.
+
+## Generar archivos declarativos (alternativa)
+
+```bash
+supabase db schema declarative generate --remote --schema public --output-dir supabase/schema/declarative
+```
+
+La generación declarativa permite obtener una representación actual del esquema, pero no reconstruye los pasos históricos que llevaron a ese estado. Revisa `docs/DB_REBUILD.md` antes de restaurar o sincronizar.
+
+No ejecutes `supabase db push --remote`, `supabase db reset --remote` ni una restauración sobre producción como parte de una auditoría.

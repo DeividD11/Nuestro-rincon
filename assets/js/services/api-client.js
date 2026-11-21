@@ -104,7 +104,15 @@ export class ApiClient {
 
   auth(action, payload = {}, options = {}) {
     const publicActions = new Set(['login', 'register', 'recover-with-code', 'refresh']);
-    return this.call(APP_CONFIG.authFunction, { action, ...payload }, { public: publicActions.has(action), ...options });
+    // El registro y la rotación de códigos llevan requestId + hash de contenido;
+    // por ello, repetir la misma escritura es idempotente incluso si el primer
+    // resultado se confirmó en PostgreSQL pero se perdió la respuesta HTTP.
+    const idempotentActions = new Set(['register', 'recovery-code:rotate']);
+    return this.call(APP_CONFIG.authFunction, { action, ...payload }, {
+      public: publicActions.has(action),
+      safeToRetry: idempotentActions.has(action),
+      ...options
+    });
   }
 
   letters(action, payload = {}, options = {}) {

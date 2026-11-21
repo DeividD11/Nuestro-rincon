@@ -7,6 +7,14 @@
   "scripts": {
     "check": "node tools/verify-project.mjs",
     "test": "node --test tests/*.test.mjs",
-    "build:pages": "node scripts/build-pages.mjs"
+    "build:pages": "node scripts/build-pages.mjs",
+    "test:db": "node scripts/run-db-tests.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
+    "test:e2e": "playwright test",
+    "check:edge": "deno check --config=./supabase/functions/deno.json ./supabase/functions/_shared/core.ts ./supabase/functions/auth-api/index.ts ./supabase/functions/letters-api/index.ts",
+    "package:zip": "node scripts/package-zip.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
   }
 }

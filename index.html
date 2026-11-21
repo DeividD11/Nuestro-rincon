@@ -6,16 +6,18 @@
   <meta name="theme-color" content="#f4eee5">
   <meta name="description" content="Nuestro Rincón: un espacio privado para conservar cartas y recuerdos compartidos.">
   <meta name="color-scheme" content="light dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://tiqbmuubpbmxqvtkcdhq.supabase.co; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*.supabase.co; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Nuestro Rincón — Correspondencia privada</title>
   <link rel="icon" href="./assets/icons/mark.svg" type="image/svg+xml">
   <script src="./assets/js/theme-boot.js"></script>
   <link rel="stylesheet" href="./assets/css/app.css">
 </head>
 <body>
-  <div id="app" class="app-root" aria-live="polite">
+  <div id="app" class="app-root">
     <div class="boot-screen" role="status"><span class="brand-seal">N</span><p>Abriendo nuestro rincón…</p></div>
   </div>
+  <div id="app-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="app-alert-announcer" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
   <noscript>Esta aplicación necesita JavaScript habilitado para funcionar.</noscript>
   <script type="module" src="./assets/js/app.js"></script>
 </body>

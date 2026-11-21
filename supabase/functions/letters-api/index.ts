@@ -1,9 +1,106 @@
 import {
   corsHeaders, dbRequest, errorStatus, jsonResponse, nowIso, patchRows,
-  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectRows
+  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectPageRows, selectRows
 } from '../_shared/core.ts';
 
 const LETTER_FIELDS = 'id,thread_id,sender_id,recipient_id,reply_to_letter_id,title,body,status,revision,created_at,updated_at,sent_at,content_purged_at,creation_request_id';
+
+// Contratos explícitos de los RPC: no se permite propagar `unknown` hasta el
+// acceso a propiedades ni asumir silenciosamente la forma de una respuesta.
+type CreateDraftRpcRecord = {
+  id: string;
+  [field: string]: unknown;
+};
+type CreateDraftRpcResult = {
+  status: 'created' | 'not_found';
+  draft?: CreateDraftRpcRecord;
+};
+type ListLetterRpcEntry = {
+  letter: Record<string, unknown>;
+  state: Record<string, unknown>;
+  recipient_read_at: string | null;
+};
+type ListLettersRpcResult = {
+  items: ListLetterRpcEntry[];
+  total: number;
+  unread: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  nextOffset: number;
+};
+type RenameProfileRpcResult = {
+  status: 'updated' | 'not_found' | 'invalid_input';
+  user?: {
+    id: string;
+    username: string;
+    email: string;
+    displayName: string;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseCreateDraftRpcResult(value: unknown): CreateDraftRpcResult {
+  if (!isRecord(value) || (value.status !== 'created' && value.status !== 'not_found')) {
+    throw new Error('DRAFT_CREATE_RESPONSE_INVALID');
+  }
+  const rawDraft = value.draft;
+  if (rawDraft === undefined || rawDraft === null) {
+    if (value.status === 'created') throw new Error('DRAFT_CREATE_RESPONSE_INVALID');
+    return { status: 'not_found' };
+  }
+  if (value.status !== 'created' || !isRecord(rawDraft) || typeof rawDraft.id !== 'string') {
+    throw new Error('DRAFT_CREATE_RESPONSE_INVALID');
+  }
+  return { status: 'created', draft: rawDraft as CreateDraftRpcRecord };
+}
+
+function parseRenameProfileRpcResult(value: unknown): RenameProfileRpcResult {
+  if (!isRecord(value) || !['updated', 'not_found', 'invalid_input'].includes(String(value.status))) {
+    throw new Error('PROFILE_RENAME_RESPONSE_INVALID');
+  }
+  if (value.status !== 'updated') return { status: value.status as RenameProfileRpcResult['status'] };
+  if (!isRecord(value.user)
+    || typeof value.user.id !== 'string'
+    || typeof value.user.username !== 'string'
+    || typeof value.user.email !== 'string'
+    || typeof value.user.displayName !== 'string') {
+    throw new Error('PROFILE_RENAME_RESPONSE_INVALID');
+  }
+  return { status: 'updated', user: {
+    id: value.user.id,
+    username: value.user.username,
+    email: value.user.email,
+    displayName: value.user.displayName
+  } };
+}
+
+function parseListLettersRpcResult(value: unknown): ListLettersRpcResult {
+  if (!isRecord(value) || !Array.isArray(value.items)
+    || !Number.isSafeInteger(value.total) || !Number.isSafeInteger(value.unread)
+    || !Number.isSafeInteger(value.offset) || !Number.isSafeInteger(value.limit)
+    || typeof value.hasMore !== 'boolean' || !Number.isSafeInteger(value.nextOffset)) {
+    throw new Error('LETTER_LIST_RESPONSE_INVALID');
+  }
+  const items: ListLetterRpcEntry[] = value.items.filter((entry): entry is ListLetterRpcEntry =>
+    isRecord(entry) && isRecord(entry.letter) && isRecord(entry.state)
+      && (typeof entry.recipient_read_at === 'string' || entry.recipient_read_at === null)
+  );
+  if (items.length !== value.items.length) throw new Error('LETTER_LIST_RESPONSE_INVALID');
+  return {
+    items, total: Number(value.total), unread: Number(value.unread),
+    offset: Number(value.offset), limit: Number(value.limit),
+    hasMore: value.hasMore, nextOffset: Number(value.nextOffset)
+  };
+}
+
+function safePageNumber(value: unknown, fallback: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? Math.min(parsed, maximum) : fallback;
+}
 
 async function getNames(ids: string[]) {
   const unique = [...new Set(ids.filter(Boolean))];
@@ -49,6 +146,7 @@ type DecoratedLetter = Record<string, unknown> & {
   isInTrash: boolean;
   isUnread: boolean;
   readByRecipientAt: string | null;
+  purgeConfirmedAt: string | null;
 };
 
 function decorate(row: Record<string, unknown>, state: Record<string, unknown> | undefined, names: Map<string,string>, recipientState?: Record<string, unknown>): DecoratedLetter {
@@ -65,47 +163,46 @@ function decorate(row: Record<string, unknown>, state: Record<string, unknown> |
     isFavorite: Boolean(state?.is_favorite),
     isArchived: Boolean(state?.archived_at),
     isInTrash: Boolean(state?.trashed_at),
+    purgeConfirmedAt: state?.purge_confirmed_at ? String(state.purge_confirmed_at) : null,
     read_at: state?.read_at || null,
     readByRecipientAt: recipientState?.read_at ? String(recipientState.read_at) : null,
     isUnread: row.status === 'sent' && row.recipient_id === state?.user_id && !state?.read_at
   };
 }
 
-async function fetchLetterList(userId: string, folder: string, search: string) {
-  let rows: Record<string, unknown>[] = [];
-  if (folder === 'drafts') {
-    rows = await selectRows('letters', { select: LETTER_FIELDS, status: 'eq.draft', sender_id: `eq.${userId}`, order: 'updated_at.desc', limit: '100' });
-  } else if (folder === 'inbox') {
-    rows = await selectRows('letters', { select: LETTER_FIELDS, status: 'eq.sent', recipient_id: `eq.${userId}`, content_purged_at: 'is.null', order: 'sent_at.desc', limit: '100' });
-  } else if (folder === 'sent') {
-    rows = await selectRows('letters', { select: LETTER_FIELDS, status: 'eq.sent', sender_id: `eq.${userId}`, content_purged_at: 'is.null', order: 'sent_at.desc', limit: '100' });
-  } else {
-    const filters: Record<string,string> = { select: 'letter_id', user_id: `eq.${userId}`, order: 'updated_at.desc', limit: '100' };
-    if (folder === 'favorites') filters.is_favorite = 'eq.true';
-    if (folder === 'archive') filters.archived_at = 'not.is.null';
-    if (folder === 'trash') filters.trashed_at = 'not.is.null';
-    const stateRows = await selectRows<Record<string,unknown>>('letter_user_state', filters);
-    const ids = stateRows.map(row => String(row.letter_id));
-    if (!ids.length) return [];
-    rows = await selectRows('letters', { select: LETTER_FIELDS, id: `in.(${ids.join(',')})`, content_purged_at: 'is.null', order: 'updated_at.desc', limit: '100' });
+async function fetchLetterList(userId: string, folder: string, search: string, offset = 0, limit = 40) {
+  const raw = await rpc<unknown>('list_user_letters', {
+    p_user_id: userId,
+    p_folder: folder,
+    p_search: search.trim().slice(0, 120),
+    p_offset: offset,
+    p_limit: limit
+  });
+  const page = parseListLettersRpcResult(raw);
+  const rows = page.items.map(entry => entry.letter);
+  if (!rows.length) {
+    return {
+      items: [], total: page.total, unread: page.unread, offset: page.offset,
+      limit: page.limit, hasMore: page.hasMore, nextOffset: page.nextOffset
+    };
   }
-  if (!rows.length) return [];
-  const [states, recipientStates, names] = await Promise.all([
-    statesFor(userId, rows.map(row => String(row.id))),
-    recipientStatesFor(rows),
-    getNames(rows.flatMap(row => [String(row.sender_id), row.recipient_id ? String(row.recipient_id) : '']))
-  ]);
-  let result = rows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id))));
-  if (folder !== 'trash') result = result.filter(row => !row.isInTrash);
-  // Archivar es una acción privada por usuario: oculta la carta de las listas
-  // principales, pero la mantiene accesible desde Archivo y Favoritos.
-  if (folder === 'inbox' || folder === 'sent') result = result.filter(row => !row.isArchived);
-  if (search.trim()) {
-    const needle = search.trim().toLocaleLowerCase('es-CO');
-    result = result.filter(row => `${row.title || ''} ${stripTags(String(row.body || ''))}`.toLocaleLowerCase('es-CO').includes(needle));
-  }
-  if (folder === 'inbox') result.sort((a,b) => Number(Boolean(b.isUnread)) - Number(Boolean(a.isUnread)) || new Date(String(b.sent_at || 0)).getTime() - new Date(String(a.sent_at || 0)).getTime());
-  return result;
+  const states = new Map(page.items.map(entry => [String(entry.letter.id), entry.state]));
+  const recipientStates = new Map(page.items
+    .filter(entry => typeof entry.recipient_read_at === 'string')
+    .map(entry => [String(entry.letter.id), { read_at: entry.recipient_read_at }]));
+  const names = await getNames(rows.flatMap(row => [
+    String(row.sender_id), row.recipient_id ? String(row.recipient_id) : ''
+  ]));
+  const items = rows.map(row => decorate(
+    row,
+    states.get(String(row.id)),
+    names,
+    recipientStates.get(String(row.id))
+  ));
+  return {
+    items, total: page.total, unread: page.unread, offset: page.offset,
+    limit: page.limit, hasMore: page.hasMore, nextOffset: page.nextOffset
+  };
 }
 
 function stripTags(html: string) { return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '); }
@@ -118,11 +215,32 @@ async function checkedLetter(letterId: string, userId: string) {
   return letter;
 }
 
-async function getLetterBundle(letterId: string, userId: string) {
+async function getLetterBundle(letterId: string, userId: string, threadOffset = 0, threadLimit = 40) {
   const current = await checkedLetter(letterId, userId);
   let threadRows: Record<string,unknown>[] = [];
+  let threadTotal = 1;
+  let threadHasMore = false;
+  let threadNextOffset = 1;
+  let threadLoadedOlderCount = 0;
   if (current.status === 'sent') {
-    threadRows = await selectRows('letters', { select: LETTER_FIELDS, thread_id: `eq.${current.thread_id}`, status: 'eq.sent', content_purged_at: 'is.null', order: 'sent_at.asc', limit: '100' });
+    const page = await selectPageRows<Record<string, unknown>>('letters', {
+      select: LETTER_FIELDS,
+      thread_id: `eq.${current.thread_id}`,
+      status: 'eq.sent',
+      content_purged_at: 'is.null',
+      order: 'sent_at.desc,id.desc'
+    }, threadOffset, threadLimit);
+    threadRows = page.items;
+    const selectedOutsideInitialPage = !threadRows.some(row => String(row.id) === String(current.id));
+    if (selectedOutsideInitialPage) threadRows.push(current);
+    if (threadOffset === 0 && selectedOutsideInitialPage) threadLoadedOlderCount = 1;
+    threadRows = [...new Map(threadRows.map(row => [String(row.id), row])).values()]
+      .sort((a, b) => new Date(String(a.sent_at || a.created_at)).getTime()
+        - new Date(String(b.sent_at || b.created_at)).getTime()
+        || String(a.id).localeCompare(String(b.id)));
+    threadTotal = page.total ?? threadRows.length;
+    threadHasMore = page.hasMore;
+    threadNextOffset = page.nextOffset;
   } else {
     threadRows = [current];
   }
@@ -133,8 +251,9 @@ async function getLetterBundle(letterId: string, userId: string) {
     getNames(threadRows.flatMap(row => [String(row.sender_id), row.recipient_id ? String(row.recipient_id) : '']))
   ]);
   const decorated = threadRows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id))));
-  const letter = decorated.find(row => row.id === current.id) || decorate(current, states.get(String(current.id)), names, recipientStates.get(String(current.id)));
-  return { letter, thread: decorated };
+  const letter = decorated.find(row => row.id === current.id)
+    || decorate(current, states.get(String(current.id)), names, recipientStates.get(String(current.id)));
+  return { letter, thread: decorated, threadTotal, threadHasMore, threadNextOffset, threadLoadedOlderCount };
 }
 
 async function handleAction(action: string, body: Record<string, unknown>, session: Awaited<ReturnType<typeof requireSession>>) {
@@ -142,30 +261,43 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
   switch (action) {
     case 'dashboard': {
       const [inbox, sent, drafts] = await Promise.all([
-        fetchLetterList(userId, 'inbox', ''), fetchLetterList(userId, 'sent', ''), fetchLetterList(userId, 'drafts', '')
+        fetchLetterList(userId, 'inbox', '', 0, 5),
+        fetchLetterList(userId, 'sent', '', 0, 5),
+        fetchLetterList(userId, 'drafts', '', 0, 1)
       ]);
-      const recent = [...inbox, ...sent].sort((a,b) => new Date(String(b.sent_at || b.updated_at)).getTime() - new Date(String(a.sent_at || a.updated_at)).getTime()).slice(0, 5);
-      return { received: inbox.length, unread: inbox.filter(item => item.isUnread).length, sent: sent.length, drafts: drafts.length, recent };
+      const recent = [...new Map([...inbox.items, ...sent.items].map(item => [String(item.id), item])).values()]
+        .sort((a,b) => new Date(String(b.sent_at || b.updated_at)).getTime() - new Date(String(a.sent_at || a.updated_at)).getTime()).slice(0, 5);
+      return { received: inbox.total, unread: inbox.unread, sent: sent.total, drafts: drafts.total, recent };
     }
     case 'list': {
       const folder = String(body.folder || 'inbox');
       if (!['inbox','sent','drafts','favorites','archive','trash'].includes(folder)) throw new Error('INVALID_INPUT');
-      return { items: await fetchLetterList(userId, folder, String(body.search || '').slice(0, 120)) };
+      const offset = safePageNumber(body.offset, 0, 10_000_000);
+      const limit = Math.min(100, Math.max(1, safePageNumber(body.limit, 40, 100)));
+      return fetchLetterList(userId, folder, String(body.search || '').slice(0, 120), offset, limit);
     }
-    case 'get': return getLetterBundle(String(body.letterId || ''), userId);
+    case 'get': {
+      const offset = safePageNumber(body.threadOffset, 0, 10_000_000);
+      const limit = Math.min(100, Math.max(1, safePageNumber(body.threadLimit, 40, 100)));
+      return getLetterBundle(String(body.letterId || ''), userId, offset, limit);
+    }
     case 'draft:create': {
       const title = String(body.title || '').slice(0, 180);
       const html = sanitizeRichHtml(body.body);
-      // Un borrador puede estar vacío mientras la persona empieza a escribir;
-      // el envío sí exige contenido no vacío en send_letter_draft.
-      const data = await rpc<Record<string,unknown>>('create_letter_draft', {
+      // El acceso al editor no crea registros. El cuerpo debe contener texto
+      // real antes de que el servidor acepte crear un borrador.
+      if (!stripTags(html).replace(/&nbsp;/g, ' ').trim()) return { status: 'empty' };
+      const raw = await rpc<unknown>('create_letter_draft', {
         p_sender_id: userId, p_creation_request_id: String(body.creationRequestId || crypto.randomUUID()), p_title: title, p_body: html
       });
-      if (data?.draft?.id) {
+      const data = parseCreateDraftRpcResult(raw);
+      const draft = data.draft;
+      const draftId = draft?.id ?? null;
+      if (draftId) {
         const state = await selectOne<Record<string, unknown>>('letter_user_state', {
-          select: 'trashed_at', letter_id: `eq.${data.draft.id}`, user_id: `eq.${userId}`
+          select: 'trashed_at', letter_id: `eq.${draftId}`, user_id: `eq.${userId}`
         });
-        if (state?.trashed_at) return { status: 'discarded', draft: data.draft };
+        if (state?.trashed_at) return { status: 'discarded', draft };
       }
       return data;
     }
@@ -225,19 +357,29 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       return rpc('confirm_letter_permanent_deletion', { p_user_id: userId, p_letter_id: letter.id });
     }
     case 'notifications': {
-      const items = await selectRows<Record<string,unknown>>('notifications', { select: 'id,user_id,letter_id,actor_user_id,notification_type,created_at,read_at,metadata', user_id: `eq.${userId}`, order: 'created_at.desc', limit: '50' });
+      const offset = safePageNumber(body.offset, 0, 10_000_000);
+      const limit = Math.min(100, Math.max(1, safePageNumber(body.limit, 30, 100)));
+      const page = await selectPageRows<Record<string, unknown>>('notifications', {
+        select: 'id,user_id,letter_id,actor_user_id,notification_type,created_at,read_at,metadata',
+        user_id: `eq.${userId}`, order: 'created_at.desc,id.desc'
+      }, offset, limit);
+      const items = page.items;
       const [names, letters] = await Promise.all([
         getNames(items.map(item => String(item.actor_user_id || ''))),
         items.length ? selectRows<Record<string,unknown>>('letters', { select: 'id,title', id: `in.(${items.map(item => String(item.letter_id)).join(',')})` }) : Promise.resolve([])
       ]);
       const titleMap = new Map(letters.map(row => [String(row.id), String(row.title || 'una carta')]));
-      return { items: items.map(item => {
-        const actor = names.get(String(item.actor_user_id)) || 'Alguien';
-        const verb = item.notification_type === 'letter_reply_received'
-          ? 'respondió a tu carta'
-          : item.notification_type === 'letter_read' ? 'leyó tu carta' : 'te escribió una carta';
-        return { ...item, message: `${actor} ${verb}: “${titleMap.get(String(item.letter_id)) || 'una carta'}”` };
-      }) };
+      return {
+        items: items.map(item => {
+          const actor = names.get(String(item.actor_user_id)) || 'Alguien';
+          const verb = item.notification_type === 'letter_reply_received'
+            ? 'respondió a tu carta'
+            : item.notification_type === 'letter_read' ? 'leyó tu carta' : 'te escribió una carta';
+          return { ...item, message: `${actor} ${verb}: “${titleMap.get(String(item.letter_id)) || 'una carta'}”` };
+        }),
+        total: page.total ?? items.length, offset: page.offset, limit: page.limit,
+        hasMore: page.hasMore, nextOffset: page.nextOffset
+      };
     }
     case 'notification:read': {
       const id = String(body.notificationId || '');
@@ -268,13 +410,14 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
     case 'profile:rename': {
       const displayName = String(body.displayName || '').trim();
       if (!displayName || displayName.length > 80) throw new Error('INVALID_INPUT');
-      const updatedAt = nowIso();
-      await Promise.all([
-        patchRows('app_users', { id: `eq.${userId}` }, { display_name: displayName, updated_at: updatedAt }),
-        patchRows('user_profiles', { user_id: `eq.${userId}` }, { display_name: displayName, updated_at: updatedAt })
-      ]);
-      const user = await selectOne<Record<string,unknown>>('app_users', { select: 'id,username,email,display_name,status', id: `eq.${userId}` });
-      return { user: { id: user?.id, username: user?.username, email: user?.email, displayName: user?.display_name } };
+      const raw = await rpc<unknown>('rename_app_profile', {
+        p_user_id: userId,
+        p_display_name: displayName,
+        p_now: nowIso()
+      });
+      const result = parseRenameProfileRpcResult(raw);
+      if (result.status !== 'updated' || !result.user) throw new Error('PROFILE_UPDATE_FAILED');
+      return { user: result.user };
     }
     case 'sessions': {
       const sessions = await selectRows<Record<string,unknown>>('user_sessions', { select: 'id,device_label,user_agent,created_at,last_seen_at,idle_expires_at,absolute_expires_at,revoked_at', user_id: `eq.${userId}`, order: 'last_seen_at.desc', limit: '30' });

@@ -65,7 +65,12 @@ export class SessionService {
 
   async register(account) {
     const payload = await this.api.auth('register', account);
-    this.setSession(payload);
+    // La cuenta puede haberse creado y la sesión no. En ese caso no se debe
+    // fabricar un estado autenticado; el controlador muestra el código local
+    // y permite volver a iniciar sesión o reintentar con la misma idempotencia.
+    if (payload.authenticated === true && payload.accessToken && payload.refreshToken) {
+      this.setSession(payload);
+    }
     return payload;
   }
 

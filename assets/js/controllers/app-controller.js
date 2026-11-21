@@ -3,6 +3,15 @@ import { AppView } from '../views/app-view.js';
 import { putLocalDraft, getLocalDraft, deleteLocalDraft, getLocalDraftsForUser, deleteLocalDraftsForUser } from '../services/local-drafts.js';
 import { ApiError } from '../services/api-client.js';
 import { plainTextFromHtml, sanitizeRichHtml, showToast, showConfirmDialog, escapeHtml } from '../utils/dom.js';
+import { readPendingRecovery, createPendingRegistration, createPendingRotation, clearPendingRecovery, markPendingRecoveryConfirmed, isUncertainRequestError } from '../services/recovery-handoff.js';
+
+import { NavigationController } from './navigation-controller.js';
+import { AuthController } from './auth-controller.js';
+import { LetterController } from './letter-controller.js';
+import { DraftController } from './draft-controller.js';
+import { SettingsController } from './settings-controller.js';
+import { NotificationController } from './notification-controller.js';
+import { DraftSyncQueue } from '../services/draft-sync-queue.js';
 
 export class AppController {
   constructor({ root, session, repository }) {
@@ -14,29 +23,41 @@ export class AppController {
     this.previousListRoute = 'inbox';
     this.autosaveTimer = null;
     this.localPersistTimer = null;
-    this.draftQueues = new Map();
+    this.draftSyncQueue = new DraftSyncQueue();
     this.draftIdentity = new Map();
     // Un borrador descartado no debe resucitar por una sincronización pendiente.
     this.discardedDraftIds = new Set();
-    this.pollTimer = null;
-    this.sessionRefreshTimer = null;
+    this.notificationPoller = null;
+    this.sessionPoller = null;
+    this._sessionRevokedWhileRecoveryPending = false;
     this.sessionChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('nuestro-rincon-session-events') : null;
     if (this.sessionChannel) {
       this.sessionChannel.onmessage = event => {
         const message = event.data || {};
         if (message.type === 'session-revoked' && message.sessionId && message.sessionId === this.session?.sessionId) {
+          // La pantalla de entrega del código tiene prioridad: no se reemplaza
+          // antes de que la persona pueda copiarlo. La sesión se descarta al
+          // confirmar el guardado, sin volver a habilitar una sesión revocada.
+          if (readPendingRecovery()) {
+            this._sessionRevokedWhileRecoveryPending = true;
+            return;
+          }
           this.forceLogout();
         }
       };
     }
     this.localDraftKey = null;
     this._lastRecoveryCode = '';
+    this._recoveryContinueRoute = 'home';
     this.routeCache = new Map();
     this.seenRoutes = new Set();
     this.routeRequestId = 0;
     this.routeCacheTtl = 60000;
     this.routePrefetches = new Map();
     this.routeCacheVersion = 0;
+    this.letterThreadCache = new Map();
+    this.pendingLetterActions = new Set();
+    this.paginationObserver = null;
     this.editorInputVersion = 0;
     this.systemThemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
   }
@@ -45,12 +66,34 @@ export class AppController {
     this.applyTheme(this.readLastTheme() || 'system');
     this.view.renderBoot();
     this.bindEvents();
+    // Si existe un código pendiente, mostrarlo ANTES de cualquier petición de
+    // restauración de sesión. Cambiar de pestaña para copiarlo no debe lanzar
+    // peticiones en segundo plano que reemplacen esta pantalla.
+    const pendingRecovery = readPendingRecovery();
+    if (pendingRecovery) {
+      this._lastRecoveryCode = pendingRecovery.recoveryCode;
+      this._recoveryContinueRoute = pendingRecovery.purpose === 'rotation' ? 'settings' : 'home';
+      const confirmed = pendingRecovery.serverConfirmed === true;
+      const purposeMessage = confirmed
+        ? 'El servidor confirmó este código. Cópialo y guárdalo fuera de este dispositivo. La pantalla permanecerá aquí hasta que confirmes que ya lo guardaste.'
+        : pendingRecovery.purpose === 'registration'
+          ? 'La solicitud de registro pudo completarse aunque se haya perdido la respuesta. Conservamos este código temporalmente en el almacenamiento local de este navegador. Si necesitas repetir el alta, usa la misma invitación, usuario y contraseña; el servidor reconocerá el mismo intento sin consumir otra invitación.'
+          : 'La solicitud de renovación pudo completarse aunque se haya perdido la respuesta. Conservamos el nuevo código temporalmente en el almacenamiento local de este navegador. Si no recibiste confirmación, vuelve a Seguridad y repite la operación con tu contraseña actual.';
+      this.view.renderRecoveryCode(pendingRecovery.recoveryCode, {
+        message: purposeMessage,
+        codePending: !confirmed,
+        retryAvailable: !confirmed,
+        retryLabel: pendingRecovery.purpose === 'registration' ? 'Reintentar registro' : 'Reintentar renovación',
+        continueLabel: 'Ya guardé el código; continuar'
+      });
+      return;
+    }
     const restored = await this.session.restore();
     if (!restored) {
       this.view.renderLogin();
       return;
     }
-    this.state.user = this.session.user;
+    this.resetPrivateSessionState(this.session.user);
     this.applyTheme(this.readCachedTheme() || 'system');
     this.localDraftKey = this.localDraftKeyFor('new');
     this.restoreEmergencyDraft().catch(() => {});
@@ -70,6 +113,13 @@ export class AppController {
     this.root.addEventListener('change', event => {
       if (event.target?.id === 'settings-theme') this.applyTheme(event.target.value);
     });
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !this.state.mobileNavOpen) return;
+      this.state.mobileNavOpen = false;
+      this.render();
+      this.root.querySelector('.mobile-menu')?.focus?.({ preventScroll: true });
+    });
+    window.addEventListener('resize', () => this.syncResponsiveAccessibility());
     // Calienta la sección mientras el usuario apunta o enfoca un enlace del menú.
     this.root.addEventListener('pointerover', event => {
       if (event.pointerType && event.pointerType !== 'mouse') return;
@@ -88,10 +138,14 @@ export class AppController {
       if (this.state.settings.theme === 'system') this.applyTheme('system');
     });
     window.addEventListener('hashchange', () => {
+      if (readPendingRecovery()) return;
       const route = this.routeFromHash();
-      if (route && this.session.user) this.openRoute(route, false);
+      if (route && this.session.user) this.openRoute(route, false, { focus: true });
     });
     window.addEventListener('online', () => {
+      if (readPendingRecovery()) return;
+      this.sessionPoller?.wake();
+      this.notificationPoller?.wake();
       if (this.state.editor) this.saveDraft(true).catch(() => {});
       this.syncPendingLocalDrafts().catch(() => {});
       showToast('Conexión restablecida. Se intentará sincronizar el borrador.', 'success');
@@ -103,16 +157,15 @@ export class AppController {
     });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) { this.flushDraftOnExit(); return; }
-      if (!this.session.user) return;
-      this.checkCurrentSession().catch(() => {});
-      this.refreshNotifications().catch(() => {});
-      if (this.state.route === 'settings') this.refreshSessions().catch(() => {});
+      if (readPendingRecovery() || !this.session.user) return;
+      this.sessionPoller?.wake();
+      this.notificationPoller?.wake();
       this.syncPendingLocalDrafts().catch(() => {});
     });
     window.addEventListener('focus', () => {
-      if (!this.session.user || !navigator.onLine) return;
-      this.checkCurrentSession().catch(() => {});
-      if (this.state.route === 'settings') this.refreshSessions().catch(() => {});
+      if (readPendingRecovery() || !this.session.user || !navigator.onLine) return;
+      this.sessionPoller?.wake();
+      this.notificationPoller?.wake();
     });
   }
 
@@ -122,257 +175,72 @@ export class AppController {
     return `${userId}:${key}`;
   }
 
-  routeFromHash() {
-    const match = location.hash.match(/^#\/?([a-z-]+)/i);
-    return match?.[1] || null;
-  }
-
-  async openRoute(route, updateHash = true) {
-    const allowed = new Set(['home','inbox','sent','write','drafts','favorites','archive','trash','letter','notifications','settings']);
-    if (!allowed.has(route) || route === 'letter') route = 'home';
-
-    // La copia local ya se actualiza en cada pulsación. Al cambiar de sección,
-    // no esperamos la red: persistimos la última instantánea y sincronizamos en segundo plano.
-    if (this.state.route === 'write' && route !== 'write' && this.state.editor) {
-      window.clearTimeout(this.autosaveTimer);
-      const snapshot = { ...this.state.editor, ...this.readEditorFromDom() };
-      const storageKey = this.localDraftKey || this.localDraftKeyFor(snapshot.letterId ? `letter:${snapshot.letterId}` : 'new');
-      this.state.editor = null;
-      // No retrasar el cambio de sección esperando IndexedDB. La copia urgente
-      // se respalda sincrónicamente y la persistencia/sincronización continúa aparte.
-      this.localDraftKey = storageKey;
-      this.queueDraftSync(snapshot, storageKey);
-    }
-
-    let editorHydration = null;
-    if (route === 'write' && !this.state.editor) {
-      if (!this.localDraftKey) this.localDraftKey = this.localDraftKeyFor('new');
-      const draftKey = this.localDraftKey;
-      const emergency = this.readEmergencyDraft(draftKey);
-      const initialEditor = {
-        letterId: null,
-        creationRequestId: crypto.randomUUID(),
-        title: '',
-        body: '',
-        revision: 1,
-        parentLetterId: null,
-        saving: false,
-        saved: false,
-        pendingSync: false
-      };
-      this.state.editor = emergency
-        ? { ...initialEditor, ...emergency, creationRequestId: emergency.creationRequestId || initialEditor.creationRequestId }
-        : initialEditor;
-      editorHydration = { key: draftKey, identity: this.state.editor.creationRequestId };
-    }
-
-    if (route !== 'letter' && route !== 'write' && route !== 'notifications' && route !== 'settings') this.previousListRoute = route;
-    this.state.route = route;
+  resetPrivateSessionState(user = null) {
+    // Nunca se reutiliza estado privado entre identidades. También invalida
+    // peticiones de precarga que aún estén en vuelo para que no repueblen la caché.
+    this.routeRequestId++;
+    this.routeCacheVersion++;
+    this.routeCache.clear();
+    this.routePrefetches.clear();
+    this.letterThreadCache.clear();
+    this.seenRoutes.clear();
+    this.state.user = user;
+    this.state.letters = [];
+    this.state.pagination = { offset: 0, nextOffset: 0, total: 0, limit: 40, hasMore: false, loading: false };
+    this.state.selectedLetter = null;
+    this.state.notifications = [];
+    this.state.notificationPagination = { offset: 0, nextOffset: 0, total: 0, limit: 30, hasMore: false, loading: false };
+    this.state.dashboard = { received: 0, unread: 0, sent: 0, drafts: 0, recent: [] };
+    this.state.sessions = [];
+    this.state.invitation = null;
+    this.state.settings = { theme: 'system', time_zone: 'America/Bogota', in_app_notifications_enabled: true };
+    this.state.editor = null;
+    this.state.search = '';
+    this.localDraftKey = null;
+    this.draftIdentity.clear();
+    this.pendingLetterActions.clear();
     this.state.routeError = null;
     this.state.routeNotice = null;
-    this.state.mobileNavOpen = false;
-    if (updateHash && location.hash !== `#/${route}`) history.replaceState(null, '', `#/${route}`);
+    this.state.routeLoading = false;
+  }
 
-    if (route === 'write') {
-      this.state.routeLoading = false;
-      this.render();
-      if (editorHydration) this.hydrateEditorFromLocal(editorHydration.key, editorHydration.identity).catch(() => {});
-      if (this.state.editor?.pendingSync || this.state.editor?.localOnly) {
-        this.saveDraft(true).catch(() => {});
-      }
-      return;
+  syncResponsiveAccessibility() {
+    const narrow = window.matchMedia?.('(max-width: 1024px)')?.matches ?? window.innerWidth <= 1024;
+    const sidebar = this.root.querySelector('.sidebar');
+    const main = this.root.querySelector('#main-content');
+    const skipLink = this.root.querySelector('.skip-link');
+    const trigger = this.root.querySelector('.mobile-menu');
+    const closeButton = this.root.querySelector('.mobile-nav-close');
+    const hideSidebar = Boolean(narrow && !this.state.mobileNavOpen);
+    const hideMain = Boolean(narrow && this.state.mobileNavOpen);
+
+    // Si el tamaño de ventana cambia mientras el foco está en el panel que
+    // pasará a inert, desplázalo antes a un control que seguirá disponible.
+    const active = document.activeElement;
+    if (hideSidebar && sidebar?.contains?.(active)) {
+      trigger?.focus?.({ preventScroll: true });
+    } else if (hideMain && main?.contains?.(active)) {
+      closeButton?.focus?.({ preventScroll: true });
+    } else if (!narrow && (active === trigger || active === closeButton)) {
+      // Los controles del drawer dejan de mostrarse en escritorio: no dejes
+      // el foco retenido en un botón que pasó a display:none.
+      const activeNav = sidebar?.querySelector?.('.nav-link.active');
+      if (activeNav) activeNav.focus?.({ preventScroll: true });
+      else this.root.querySelector('#page-heading')?.focus?.({ preventScroll: true });
     }
 
-    const cacheKey = this.routeCacheKey(route);
-    const cached = this.routeCache.get(cacheKey);
-    const requestId = ++this.routeRequestId;
-    const hasVisited = this.seenRoutes.has(route);
-    this.seenRoutes.add(route);
-
-    // Primero se muestra la última vista disponible. La red actualiza después
-    // sin vaciar la página ni volver a mostrar placeholders al navegar.
-    if (cached) {
-      this.applyRouteData(route, cached.data);
-      this.state.routeError = null;
-      this.state.routeLoading = false;
-      this.render();
-      if (Date.now() - cached.at > this.routeCacheTtl) {
-        this.refreshRouteData(route, cacheKey, requestId, true);
-      }
-      return;
+    if (sidebar) {
+      sidebar.toggleAttribute('inert', hideSidebar);
+      if (narrow) sidebar.setAttribute('aria-hidden', String(hideSidebar));
+      else sidebar.removeAttribute('aria-hidden');
     }
-
-    const prefetched = this.routePrefetches.get(cacheKey);
-    if (prefetched) {
-      this.state.routeLoading = !hasVisited;
-      this.render();
-      await prefetched;
-      if (requestId !== this.routeRequestId || this.state.route !== route) return;
-      const ready = this.routeCache.get(cacheKey);
-      if (ready) {
-        this.applyRouteData(route, ready.data);
-        this.state.routeError = null;
-        this.state.routeLoading = false;
-        this.render();
-        return;
-      }
+    if (main) {
+      main.toggleAttribute('inert', hideMain);
+      if (narrow) main.setAttribute('aria-hidden', String(hideMain));
+      else main.removeAttribute('aria-hidden');
     }
-
-    this.state.routeLoading = !hasVisited;
-    // En rutas ya visitadas conservamos el contenido anterior mientras llega la
-    // consulta nueva. Así no parpadea una lista vacía ni reaparece el placeholder.
-    this.render();
-    await this.refreshRouteData(route, cacheKey, requestId, hasVisited);
-  }
-
-  routeCacheKey(route) {
-    return `${route}:${['inbox','sent','drafts','favorites','archive','trash'].includes(route) ? this.state.search : ''}`;
-  }
-
-  prefetchRoute(route) {
-    if (!route || route === 'write' || route === 'letter' || route === 'settings' && !this.session.user) return;
-    const allowed = new Set(['home','inbox','sent','drafts','favorites','archive','trash','notifications','settings']);
-    if (!allowed.has(route)) return;
-    const key = this.routeCacheKey(route);
-    const cached = this.routeCache.get(key);
-    if (cached && Date.now() - cached.at <= this.routeCacheTtl) return;
-    if (this.routePrefetches.has(key)) return;
-    const cacheVersion = this.routeCacheVersion;
-    const task = this.fetchRouteData(route)
-      .then(data => {
-        if (cacheVersion !== this.routeCacheVersion) return;
-        this.routeCache.set(key, { data, at: Date.now() });
-        if (this.routeCache.size > 30) this.routeCache.delete(this.routeCache.keys().next().value);
-      })
-      .catch(() => {})
-      .finally(() => this.routePrefetches.delete(key));
-    this.routePrefetches.set(key, task);
-  }
-
-  invalidateRouteCache() {
-    // Conserva los datos para que la navegación siga siendo inmediata; marca
-    // las vistas como caducadas y las sincroniza de nuevo al abrirlas.
-    this.routeCacheVersion++;
-    for (const [key, entry] of this.routeCache.entries()) {
-      this.routeCache.set(key, { ...entry, at: 0 });
-    }
-    this.routePrefetches.clear();
-  }
-
-  async fetchRouteData(route) {
-    if (route === 'home') {
-      const [dashboard, notifications] = await Promise.all([
-        this.repository.dashboard(),
-        this.repository.notifications().catch(() => ({ items: this.state.notifications }))
-      ]);
-      return { dashboard, notifications };
-    }
-    if (['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
-      return { letters: await this.repository.list(route, this.state.search) };
-    }
-    if (route === 'notifications') return { notifications: await this.repository.notifications() };
-    if (route === 'settings') {
-      const [settings, sessions] = await Promise.all([this.repository.settings(), this.repository.sessions()]);
-      return { settings, sessions };
-    }
-    return {};
-  }
-
-  applyRouteData(route, data) {
-    if (route === 'home') {
-      this.state.dashboard = data.dashboard || this.state.dashboard;
-      this.state.notifications = data.notifications?.items || this.state.notifications;
-    } else if (['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
-      this.state.letters = data.letters?.items || [];
-    } else if (route === 'notifications') {
-      this.state.notifications = data.notifications?.items || [];
-    } else if (route === 'settings') {
-      this.state.settings = { ...this.state.settings, ...(data.settings?.settings || {}) };
-      this.state.sessions = data.sessions?.sessions || [];
-      this.cacheTheme(this.state.settings.theme);
-      this.applyTheme(this.state.settings.theme);
-    }
-  }
-
-  async refreshRouteData(route, cacheKey, requestId, background) {
-    const cacheVersion = this.routeCacheVersion;
-    try {
-      const data = await this.fetchRouteData(route);
-      if (cacheVersion !== this.routeCacheVersion) return;
-      this.routeCache.set(cacheKey, { data, at: Date.now() });
-      if (this.routeCache.size > 30) this.routeCache.delete(this.routeCache.keys().next().value);
-      if (requestId !== this.routeRequestId || this.state.route !== route) return;
-      this.applyRouteData(route, data);
-      this.state.routeError = null;
-      this.state.routeNotice = null;
-      this.state.routeLoading = false;
-      this.render();
-    } catch (error) {
-      if (requestId !== this.routeRequestId || this.state.route !== route) return;
-      this.state.routeLoading = false;
-      if (error.status === 401) { this.forceLogout(); return; }
-      if (background) {
-        this.state.routeNotice = 'No pudimos actualizar esta sección. Se conserva la última copia disponible.';
-      } else {
-        this.state.routeError = error.message || 'No se pudo cargar esta sección.';
-      }
-      this.render();
-    }
-  }
-
-  themeStorageKey() {
-    return `nuestro-rincon:theme:${this.session?.user?.id || 'guest'}`;
-  }
-
-  readCachedTheme() {
-    try {
-      const value = localStorage.getItem(this.themeStorageKey());
-      return ['light','dark','system'].includes(value) ? value : null;
-    } catch { return null; }
-  }
-
-  readLastTheme() {
-    try {
-      const value = localStorage.getItem('nuestro-rincon:theme:last');
-      return ['light','dark','system'].includes(value) ? value : null;
-    } catch { return null; }
-  }
-
-  cacheTheme(theme) {
-    if (!['light','dark','system'].includes(theme)) return;
-    try {
-      localStorage.setItem(this.themeStorageKey(), theme);
-      localStorage.setItem('nuestro-rincon:theme:last', theme);
-    } catch { /* La preferencia remota sigue siendo la fuente persistente. */ }
-  }
-
-  applyTheme(theme = 'system') {
-    const preference = ['light','dark','system'].includes(theme) ? theme : 'system';
-    const resolved = preference === 'system'
-      ? (this.systemThemeMedia?.matches ? 'dark' : 'light')
-      : preference;
-    this.state.settings.theme = preference;
-    document.documentElement.dataset.theme = resolved;
-    document.documentElement.dataset.themePreference = preference;
-    document.documentElement.style.colorScheme = resolved;
-    this.cacheTheme(preference);
-  }
-
-  async loadPreferencesInBackground() {
-    if (!this.session.user) return;
-    try {
-      const result = await this.repository.settings();
-      if (!this.session.user) return;
-      this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
-      this.cacheTheme(this.state.settings.theme);
-      this.applyTheme(this.state.settings.theme);
-      if (this.state.route === 'settings') this.render();
-    } catch { /* Un fallo de preferencias no debe bloquear el resto de la aplicación. */ }
-  }
-
-  render() {
-    this.state.user = this.session.user;
-    this.view.renderShell(this.state);
+    if (skipLink) skipLink.toggleAttribute('inert', hideMain);
+    if (trigger) trigger.setAttribute('aria-expanded', String(Boolean(narrow && this.state.mobileNavOpen)));
   }
 
   async onSubmit(event) {
@@ -385,23 +253,59 @@ export class AppController {
     try {
       if (form.id === 'login-form') {
         await this.session.login(data.identifier, data.password);
-        this.state.user = this.session.user;
+        this.resetPrivateSessionState(this.session.user);
         this.applyTheme(this.readCachedTheme() || 'system');
         this.loadPreferencesInBackground();
         await this.openRoute('home');
         this.startNotificationPolling();
         this.startSessionRefreshPolling();
       } else if (form.id === 'register-form') {
-        const result = await this.session.register(data);
+        const pending = this.getRegistrationRecoveryHandoff(data);
+        this._lastRecoveryCode = pending.recoveryCode;
+        this._recoveryContinueRoute = 'home';
+        const result = await this.session.register({
+          ...data,
+          invitationCode: pending.invitationCode,
+          displayName: pending.displayName,
+          username: pending.username,
+          requestId: pending.requestId,
+          recoveryCode: pending.recoveryCode
+        });
         data.password = '';
-        this._lastRecoveryCode = result.recoveryCode || '';
-        this.state.user = this.session.user;
-        this.localDraftKey = this.localDraftKeyFor('new');
-        this.applyTheme('system');
-        this.startSessionRefreshPolling();
-        this.loadPreferencesInBackground();
         history.replaceState(null, '', location.pathname);
-        this.view.renderRecoveryCode(this._lastRecoveryCode);
+        if (result.recoveryCodeCurrent === false) {
+          this._lastRecoveryCode = '';
+          clearPendingRecovery();
+          this.state.user = this.session.user;
+          this._recoveryContinueRoute = 'home';
+          this.view.renderRecoveryCode('', {
+            codeCurrent: false,
+            message: result.message || 'La cuenta ya existe, pero el código de este intento fue sustituido. Inicia sesión y genera uno nuevo desde Configuración → Seguridad.',
+            continueLabel: this.session.user ? 'Continuar a la aplicación' : 'Ir al inicio de sesión'
+          });
+          if (this.session.user) this.startSessionRefreshPolling();
+          return;
+        }
+        if (result.recoveryCodeCurrent === true) markPendingRecoveryConfirmed();
+        this.resetPrivateSessionState(this.session.user);
+        if (this.session.user) {
+          this.localDraftKey = this.localDraftKeyFor('new');
+          this.applyTheme(this.readCachedTheme() || 'system');
+          // No iniciar renovaciones periódicas mientras el código recién
+          // emitido está visible. La persona debe poder copiarlo sin que una
+          // comprobación de sesión reemplace esta pantalla. El polling se
+          // reanuda al pulsar «Ya lo guardé».
+          this.stopSessionRefreshPolling();
+          this.stopNotificationPolling();
+        }
+        this.view.renderRecoveryCode(this._lastRecoveryCode, {
+          message: result.authenticated === false
+            ? 'La cuenta se creó y el código quedó registrado, pero no se pudo abrir la sesión. Guarda el código; después inicia sesión con tu usuario y contraseña. Si hace falta, puedes reintentar el mismo registro sin gastar otra invitación.'
+            : 'Guárdalo fuera de este dispositivo y no lo compartas. El código se conserva en este navegador hasta que confirmes que ya lo guardaste.',
+          retryAvailable: result.authenticated === false,
+          retryLabel: 'Reintentar el registro',
+          continueLabel: this.session.user ? 'Ya lo guardé' : 'Ya lo guardé; ir al acceso'
+        });
       } else if (form.id === 'recovery-form') {
         await this.session.api.auth('recover-with-code', {
           username: data.username,
@@ -435,6 +339,26 @@ export class AppController {
         await this.repository.sessions().then(result => { this.state.sessions = result.sessions || []; }).catch(() => {});
         showToast('Contraseña actualizada. Se cerraron las demás sesiones.', 'success');
         this.render();
+      } else if (form.id === 'recovery-code-form') {
+        const pending = this.getRotationRecoveryHandoff();
+        this._lastRecoveryCode = pending.recoveryCode;
+        this._recoveryContinueRoute = 'settings';
+        this.stopSessionRefreshPolling();
+        this.stopNotificationPolling();
+        const result = await this.session.api.auth('recovery-code:rotate', {
+          currentPassword: data.currentPassword,
+          recoveryCode: pending.recoveryCode,
+          requestId: pending.requestId
+        });
+        markPendingRecoveryConfirmed();
+        this.view.renderRecoveryCode(pending.recoveryCode, {
+          message: result.alreadyRotated
+            ? 'La renovación ya se había completado. Este es el mismo código de esa operación; guárdalo fuera de este dispositivo.'
+            : 'El código nuevo ya está activo y todos los códigos anteriores quedaron invalidados. Guárdalo fuera de este dispositivo.',
+          retryAvailable: true,
+          retryLabel: 'Volver a Seguridad',
+          continueLabel: 'Ya guardé el nuevo código'
+        });
       } else if (form.id === 'delete-account-form') {
         if (data.confirmation !== 'ELIMINAR') throw new Error('Escribe exactamente ELIMINAR para confirmar la eliminación de tu cuenta.');
         const approved = await showConfirmDialog({
@@ -456,7 +380,7 @@ export class AppController {
         this.stopSessionRefreshPolling();
         await deleteLocalDraftsForUser(userId);
         try { localStorage.removeItem(`nuestro-rincon:theme:${userId}`); localStorage.removeItem(`nuestro-rincon:draft-emergency:${userId}`); } catch {}
-        this.invalidateRouteCache();
+        this.resetPrivateSessionState(null);
         this.session.clearSession();
         this.state.editor = null;
         this.view.renderLogin('Tu cuenta se eliminó. Las cartas compartidas que ya fueron enviadas se conservaron para la otra persona.');
@@ -470,39 +394,69 @@ export class AppController {
         this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
         this.cacheTheme(this.state.settings.theme);
         this.applyTheme(this.state.settings.theme);
-        this.routeCache.delete('settings:');
+        this.invalidateRouteCache();
         showToast('Preferencias guardadas.', 'success');
         this.render();
       }
     } catch (error) {
       if (form.id === 'login-form') this.view.renderLogin(error.message);
-      else if (form.id === 'register-form') this.view.renderRegister(error.message);
+      else if (form.id === 'register-form') {
+        const pending = readPendingRecovery();
+        if (pending?.purpose === 'registration'
+          && (isUncertainRequestError(error) || error?.code === 'REGISTRATION_RETRY_CREDENTIALS_INVALID')) {
+          this._lastRecoveryCode = pending.recoveryCode;
+          this._recoveryContinueRoute = 'home';
+          const credentialsMismatch = error?.code === 'REGISTRATION_RETRY_CREDENTIALS_INVALID';
+          this.view.renderRecoveryCode(pending.recoveryCode, {
+            codePending: true,
+            message: credentialsMismatch
+              ? 'El servidor reconoce que este intento pudo crear la cuenta, pero la contraseña introducida no coincide. No podemos confirmar desde este intento si el código sigue activo o fue sustituido. Conserva esta copia, inicia sesión con la contraseña vigente y, si hace falta, genera uno nuevo desde Configuración → Seguridad.'
+              : 'No recibimos confirmación del servidor. Por seguridad conservamos el mismo código y la clave del intento en este navegador. El registro pudo haberse completado o quizá no llegó a ejecutarse: reintenta con la misma invitación, usuario y contraseña para que el servidor confirme o complete el alta sin consumir otra invitación.',
+            retryAvailable: true,
+            retryLabel: 'Reintentar registro',
+            continueLabel: 'Ya guardé el código; ir al acceso'
+          });
+        } else {
+          // Un rechazo definitivo significa que el RPC no confirmó el alta.
+          // No mostrar un código temporal como si ya estuviera activo.
+          clearPendingRecovery();
+          this._lastRecoveryCode = '';
+          this.view.renderRegister(error.message);
+        }
+      }
       else if (form.id === 'recovery-form') this.view.renderRecovery(error.message);
+      else if (form.id === 'recovery-code-form') {
+        const pending = readPendingRecovery();
+        if (pending?.purpose === 'rotation' && isUncertainRequestError(error)) {
+          this._lastRecoveryCode = pending.recoveryCode;
+          this._recoveryContinueRoute = 'settings';
+          this.stopSessionRefreshPolling();
+          this.stopNotificationPolling();
+          this.view.renderRecoveryCode(pending.recoveryCode, {
+            codePending: true,
+            message: 'No recibimos confirmación de Supabase. El nuevo código se conserva temporalmente en este navegador, pero aún no sabemos si quedó activo. Vuelve a Seguridad y repite la operación con tu contraseña actual; se reconocerá el mismo intento y no se generará un código distinto.',
+            retryAvailable: Boolean(this.session.user),
+            retryLabel: 'Volver a Seguridad',
+            continueLabel: 'Ya guardé el código; continuar'
+          });
+        } else {
+          // Un rechazo definitivo de la rotación no activa el código nuevo.
+          clearPendingRecovery();
+          this._lastRecoveryCode = '';
+          showToast(error.message || 'No se pudo renovar el código.', 'error');
+          if (this.session.user) {
+            await this.openRoute('settings');
+            this.loadPreferencesInBackground();
+            this.startNotificationPolling();
+            this.startSessionRefreshPolling();
+          } else {
+            this.view.renderLogin('Tu sesión terminó. Inicia sesión para gestionar tu código de recuperación.');
+          }
+        }
+      }
       else showToast(error.message || 'No se pudo completar la operación.', 'error');
     } finally {
       if (button?.isConnected) { button.disabled = false; button.textContent = button.dataset.originalText || 'Continuar'; }
-    }
-  }
-
-  onInput(event) {
-    if (event.target.id === 'letter-search') {
-      this.state.search = event.target.value;
-      window.clearTimeout(this.searchTimer);
-      this.searchTimer = window.setTimeout(() => this.openRoute(this.state.route, false), 350);
-      return;
-    }
-    if (event.target.id === 'editor-title' || event.target.id === 'letter-editor') {
-      this.editorInputVersion++;
-      const editor = this.readEditorFromDom();
-      this.state.editor = { ...this.state.editor, ...editor, inputVersion: this.editorInputVersion, savedAt: new Date().toISOString(), saving: true, saved: false };
-      const status = this.root.querySelector('#save-status');
-      if (status) status.textContent = 'Guardando…';
-      this.persistEmergencyDraft(this.state.editor);
-      // IndexedDB conserva una instantánea por pulsación; la escritura remota
-      // sí se agrupa para no abrir una petición por cada tecla.
-      this.persistLocalDraft().catch(() => {});
-      window.clearTimeout(this.autosaveTimer);
-      this.autosaveTimer = window.setTimeout(() => this.saveDraft(true).catch(() => {}), 1000);
     }
   }
 
@@ -510,7 +464,7 @@ export class AppController {
     const routeTarget = event.target.closest('[data-route]');
     if (routeTarget) {
       event.preventDefault();
-      await this.openRoute(routeTarget.dataset.route);
+      await this.openRoute(routeTarget.dataset.route, true, { focus: true });
       return;
     }
     const actionTarget = event.target.closest('[data-action]');
@@ -520,15 +474,60 @@ export class AppController {
       return;
     }
     const action = actionTarget.dataset.action;
+    const guardedLetterActions = new Set(['toggle-favorite','toggle-archive','trash-letter','restore-letter','purge-letter','reply-letter','edit-draft','preview-send-draft']);
+    const guardedLetterId = guardedLetterActions.has(action) ? String(actionTarget.dataset.letterId || '') : '';
+    const guardedButtons = guardedLetterId
+      ? [...this.root.querySelectorAll('button[data-letter-id]')].filter(button => button.dataset.letterId === guardedLetterId)
+      : [];
+    if (guardedLetterId && this.pendingLetterActions.has(guardedLetterId)) return;
+    const previousDisabled = guardedButtons.map(button => [button, button.disabled]);
+    if (guardedLetterId) {
+      this.pendingLetterActions.add(guardedLetterId);
+      guardedButtons.forEach(button => { button.disabled = true; button.setAttribute('aria-busy', 'true'); });
+    }
     try {
       switch (action) {
-        case 'show-register': this.view.renderRegister(); break;
+        case 'show-register': { const pending = readPendingRecovery(); this.view.renderRegister('', pending?.purpose === 'registration' ? pending : null); break; }
         case 'show-login': this.view.renderLogin(); break;
         case 'show-recovery': this.view.renderRecovery(); break;
-        case 'copy-recovery': await navigator.clipboard.writeText(this._lastRecoveryCode); showToast('Código copiado.', 'success'); break;
-        case 'continue-after-recovery': this._lastRecoveryCode = ''; history.replaceState(null, '', location.pathname); await this.openRoute('home'); this.startNotificationPolling(); this.startSessionRefreshPolling(); break;
-        case 'open-mobile-nav': this.state.mobileNavOpen = true; this.render(); break;
-        case 'close-mobile-nav': this.state.mobileNavOpen = false; this.render(); break;
+        case 'copy-recovery': {
+          if (!this._lastRecoveryCode) throw new Error('No hay un código disponible para copiar.');
+          let copied = false;
+          try {
+            if (navigator.clipboard?.writeText) {
+              await navigator.clipboard.writeText(this._lastRecoveryCode);
+              copied = true;
+            }
+          } catch { /* Se intenta la copia compatible con navegadores antiguos. */ }
+          if (!copied) {
+            const field = document.createElement('textarea');
+            field.value = this._lastRecoveryCode;
+            field.setAttribute('readonly', '');
+            field.style.position = 'fixed';
+            field.style.opacity = '0';
+            this.root.append(field);
+            field.select();
+            try { copied = document.execCommand('copy') === true; } catch { copied = false; }
+            field.remove();
+          }
+          if (!copied) {
+            const codeElement = this.root.querySelector('.recovery-list');
+            if (codeElement) {
+              const range = document.createRange();
+              range.selectNodeContents(codeElement);
+              const selection = window.getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+            }
+            throw new Error('No se pudo copiar automáticamente. El código quedó seleccionado para copiarlo manualmente.');
+          }
+          showToast('Código copiado. Guárdalo fuera de este dispositivo.', 'success');
+          break;
+        }
+        case 'continue-after-recovery': await this.continueAfterRecoverySaved(); break;
+        case 'retry-recovery-operation': await this.retryRecoveryOperation(); break;
+        case 'open-mobile-nav': this.state.mobileNavOpen = true; this.render(); this.root.querySelector('.mobile-nav-close')?.focus?.({ preventScroll: true }); break;
+        case 'close-mobile-nav': this.state.mobileNavOpen = false; this.render(); this.root.querySelector('.mobile-menu')?.focus?.({ preventScroll: true }); break;
         case 'logout': {
           const approved = await showConfirmDialog({
             tone: 'neutral', title: 'Cerrar sesión',
@@ -536,14 +535,64 @@ export class AppController {
             detail: 'Podrás volver a entrar con tu nombre de usuario y contraseña.',
             confirmLabel: 'Cerrar sesión', cancelLabel: 'Seguir aquí', icon: '↗'
           });
-          if (approved) { await this.session.logout(); this.stopNotificationPolling(); this.stopSessionRefreshPolling(); this.view.renderLogin(); }
+          if (approved) { await this.session.logout(); this.stopNotificationPolling(); this.stopSessionRefreshPolling(); this.resetPrivateSessionState(null); this.view.renderLogin(); }
           break;
         }
-        case 'open-notifications': await this.openRoute('notifications'); break;
-        case 'open-letter': await this.openLetter(actionTarget.dataset.letterId); break;
+        case 'create-invitation': {
+          actionTarget.disabled = true;
+          const result = await this.session.api.auth('invitation:create');
+          this.state.invitation = {
+            ...(this.state.invitation || {}),
+            canCreate: false,
+            pending: true,
+            expiresAt: result.expiresAt,
+            revealedCode: result.code
+          };
+          this.invalidateRouteCache();
+          this.render();
+          showToast('Invitación generada. Copia y comparte el código en privado.', 'success');
+          break;
+        }
+        case 'revoke-invitation': {
+          const approved = await showConfirmDialog({
+            tone: 'warning', title: 'Revocar invitación',
+            message: 'El código dejará de ser válido inmediatamente.',
+            detail: 'Si ya lo compartiste, la otra persona no podrá utilizarlo. Después podrás generar uno nuevo.',
+            confirmLabel: 'Revocar código', cancelLabel: 'Conservar invitación'
+          });
+          if (!approved) break;
+          await this.session.api.auth('invitation:revoke');
+          this.state.invitation = { ...(this.state.invitation || {}), pending: false, canCreate: true, expiresAt: null, revealedCode: '' };
+          this.invalidateRouteCache();
+          this.render();
+          showToast('La invitación fue revocada.', 'success');
+          break;
+        }
+        case 'copy-invitation': {
+          const code = this.state.invitation?.revealedCode;
+          if (!code) throw new Error('El código ya no está disponible en esta pantalla.');
+          await navigator.clipboard.writeText(code);
+          showToast('Código de invitación copiado.', 'success');
+          break;
+        }
+        case 'dismiss-invitation-code': {
+          this.state.invitation = { ...(this.state.invitation || {}), revealedCode: '' };
+          this.render();
+          break;
+        }
+        case 'open-notifications': await this.openRoute('notifications', true, { focus: true }); break;
+        case 'open-letter': {
+          const targetId = actionTarget.dataset.letterId;
+          const inThread = this.state.route === 'letter'
+            ? this.state.selectedLetter?.thread?.find(item => String(item.id) === String(targetId))
+            : null;
+          await this.openLetter(targetId, true, inThread || this.letterSummary(targetId));
+          break;
+        }
         case 'retry-route': await this.openRoute(this.state.route, false); break;
-        case 'back-to-list': await this.openRoute(this.previousListRoute); break;
-        case 'cancel-editor': await this.openRoute(this.previousListRoute || 'drafts'); break;
+        case 'retry-letter': await this.openLetter(this.state.selectedLetter?.letter?.id, false, this.state.selectedLetter?.letter); break;
+        case 'back-to-list': await this.openRoute(this.previousListRoute, true, { focus: true }); break;
+        case 'cancel-editor': await this.openRoute(this.previousListRoute || 'drafts', true, { focus: true }); break;
         case 'save-draft': await this.saveDraft(false); break;
         case 'preview-send': await this.previewSend(); break;
         case 'preview-send-draft': await this.openLetterForSend(actionTarget.dataset.letterId); break;
@@ -558,19 +607,47 @@ export class AppController {
         case 'format-center': this.execFormat('justifyCenter'); break;
         case 'format-right': this.execFormat('justifyRight'); break;
         case 'toggle-favorite': {
-          const letterId = actionTarget.dataset.letterId;
-          const current = actionTarget.dataset.favorite === undefined ? Boolean(this.state.selectedLetter?.letter?.isFavorite) : actionTarget.dataset.favorite === 'true';
-          await this.repository.setFavorite(letterId, !current);
-          this.invalidateRouteCache(); showToast('Favorito actualizado.', 'success');
-          if (this.state.route === 'letter') await this.openLetter(letterId, false); else await this.openRoute(this.state.route, false);
+          const letterId = String(actionTarget.dataset.letterId || '');
+          const source = this.state.selectedLetter?.letter?.id === letterId
+            ? this.state.selectedLetter.letter
+            : (this.state.letters || []).find(item => String(item.id) === letterId);
+          if (!source) throw new Error('No encontramos la carta para actualizar el favorito.');
+          const before = this.snapshotLetterState();
+          const next = !Boolean(source.isFavorite);
+          this.patchLetterState(letterId, { isFavorite: next }, { removeFromList: this.state.route === 'favorites' && !next });
+          this.renderCurrentRoute();
+          try {
+            const result = await this.repository.setFavorite(letterId, next);
+            if (result?.status !== 'updated') throw new Error('No se pudo actualizar el favorito. La carta puede estar en Papelera o ya no estar disponible.');
+            this.invalidateRouteCache();
+            showToast(next ? 'Añadida a Favoritos.' : 'Quitada de Favoritos.', 'success');
+          } catch (error) {
+            this.restoreLetterState(before);
+            throw error;
+          }
           break;
         }
         case 'toggle-archive': {
-          const letterId = actionTarget.dataset.letterId;
-          const current = actionTarget.dataset.archived === undefined ? Boolean(this.state.selectedLetter?.letter?.isArchived) : actionTarget.dataset.archived === 'true';
-          await this.repository.setArchive(letterId, !current);
-          this.invalidateRouteCache(); showToast(current ? 'La carta salió del archivo.' : 'La carta se guardó en Archivo.', 'success');
-          if (this.state.route === 'letter') await this.openRoute(this.previousListRoute, false); else await this.openRoute(this.state.route, false);
+          const letterId = String(actionTarget.dataset.letterId || '');
+          const source = this.state.selectedLetter?.letter?.id === letterId
+            ? this.state.selectedLetter.letter
+            : (this.state.letters || []).find(item => String(item.id) === letterId);
+          if (!source) throw new Error('No encontramos la carta para actualizar el Archivo.');
+          const before = this.snapshotLetterState();
+          const next = !Boolean(source.isArchived);
+          const removeFromList = (['inbox','sent'].includes(this.state.route) && next)
+            || (this.state.route === 'archive' && !next);
+          this.patchLetterState(letterId, { isArchived: next }, { removeFromList });
+          this.renderCurrentRoute();
+          try {
+            const result = await this.repository.setArchive(letterId, next);
+            if (result?.status !== 'updated') throw new Error('No se pudo actualizar el Archivo. La carta puede estar en Papelera o ya no estar disponible.');
+            this.invalidateRouteCache();
+            showToast(next ? 'Carta guardada en Archivo.' : 'Carta retirada del Archivo.', 'success');
+          } catch (error) {
+            this.restoreLetterState(before);
+            throw error;
+          }
           break;
         }
         case 'trash-letter': {
@@ -590,12 +667,25 @@ export class AppController {
           break;
         }
         case 'restore-letter': {
-          const letterId = actionTarget.dataset.letterId;
-          const restored = await this.repository.restore(letterId);
-          if (restored.status !== 'restored') throw new Error('No se pudo recuperar la carta. Actualiza la lista e inténtalo de nuevo.');
-          this.discardedDraftIds.delete(letterId);
-          this.invalidateRouteCache(); showToast('Carta recuperada.', 'success');
-          await this.openRoute(this.state.route === 'letter' ? this.previousListRoute : this.state.route, false);
+          const letterId = String(actionTarget.dataset.letterId || '');
+          const before = this.snapshotLetterState();
+          this.state.letters = (this.state.letters || []).filter(item => String(item.id) !== letterId);
+          if (this.state.selectedLetter?.letter?.id === letterId) this.state.selectedLetter = null;
+          if (this.state.route === 'letter') {
+            this.state.route = this.previousListRoute || 'trash';
+            history.replaceState(null, '', `#/${this.state.route}`);
+          }
+          this.renderCurrentRoute();
+          try {
+            const restored = await this.repository.restore(letterId);
+            if (restored.status !== 'restored') throw new Error('No se pudo recuperar la carta. Actualiza la lista e inténtalo de nuevo.');
+            this.discardedDraftIds.delete(letterId);
+            this.invalidateRouteCache();
+            showToast('Carta recuperada.', 'success');
+          } catch (error) {
+            this.restoreLetterState(before);
+            throw error;
+          }
           break;
         }
         case 'purge-letter': {
@@ -606,10 +696,38 @@ export class AppController {
             confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Mantener en Papelera'
           });
           if (!approved) break;
-          const result = await this.repository.purge(actionTarget.dataset.letterId);
-          this.invalidateRouteCache();
-          showToast(result.status === 'pending_other_participant' ? 'Tu confirmación quedó registrada. Falta la de la otra persona.' : 'El contenido se eliminó según la política compartida.', 'success');
-          await this.openRoute(this.state.route === 'letter' ? 'trash' : this.state.route, false);
+          const letterId = String(actionTarget.dataset.letterId || '');
+          const before = this.snapshotLetterState();
+          const optimisticAt = new Date().toISOString();
+          // El botón cambia a estado de proceso mientras llega la respuesta,
+          // pero no afirmamos que la confirmación quedó guardada antes del ACK.
+          this.renderCurrentRoute();
+          try {
+            const result = await this.repository.purge(letterId);
+            if (result.status === 'pending_other_participant' || result.status === 'already_confirmed_waiting') {
+              this.patchLetterState(letterId, { purgeConfirmedAt: optimisticAt });
+              showToast(result.status === 'pending_other_participant'
+                ? 'Tu confirmación quedó guardada. La carta seguirá en Papelera hasta que la otra persona confirme.'
+                : 'Ya habías confirmado. Solo falta que la otra persona confirme.', 'info', { duration: 6500 });
+            } else if (result.status === 'purged' || result.status === 'already_purged') {
+              this.state.letters = (this.state.letters || []).filter(item => String(item.id) !== letterId);
+              if (this.state.selectedLetter?.letter?.id === letterId) this.state.selectedLetter = null;
+              if (this.state.route === 'letter') {
+                this.state.route = 'trash';
+                history.replaceState(null, '', '#/trash');
+              }
+              showToast('El contenido se eliminó para ambas personas.', 'success');
+            } else {
+              throw new Error(result.status === 'not_in_trash'
+                ? 'Primero mueve la carta a Papelera para eliminarla definitivamente.'
+                : 'No se pudo confirmar la eliminación. Actualiza la Papelera e inténtalo de nuevo.');
+            }
+            this.invalidateRouteCache();
+            this.renderCurrentRoute();
+          } catch (error) {
+            this.restoreLetterState(before);
+            throw error;
+          }
           break;
         }
         case 'download-txt': await this.downloadTxt(actionTarget.dataset.letterId); break;
@@ -637,725 +755,30 @@ export class AppController {
     } catch (error) {
       showToast(error.message || 'La operación no se pudo completar.', 'error');
       if (error.status === 401) this.forceLogout();
-    }
-  }
-
-  async openLetter(letterId, updateHash = true) {
-    const requestId = ++this.routeRequestId;
-    this.state.routeLoading = false;
-    this.previousListRoute = ['inbox','sent','drafts','favorites','archive','trash'].includes(this.state.route) ? this.state.route : this.previousListRoute;
-    const data = await this.repository.get(letterId);
-    if (requestId !== this.routeRequestId) return;
-    this.state.selectedLetter = data;
-    if (data.letter.status === 'sent' && data.letter.recipient_id === this.session.user.id && !data.letter.read_at) {
-      await this.repository.markRead(data.letter.thread_id);
-      if (requestId !== this.routeRequestId) return;
-      this.invalidateRouteCache();
-      data.letter.read_at = new Date().toISOString();
-      data.letter.readByRecipientAt = data.letter.read_at;
-      try { this.state.dashboard = await this.repository.dashboard(); } catch { /* La lectura ya quedó registrada; el contador se actualizará en la siguiente carga. */ }
-      if (requestId !== this.routeRequestId) return;
-    }
-    this.state.route = 'letter';
-    this.state.mobileNavOpen = false;
-    if (updateHash) history.replaceState(null, '', '#/letter');
-    this.render();
-  }
-
-  async openLetterForSend(letterId) {
-    await this.editDraft(letterId);
-    await this.previewSend();
-  }
-
-  async editDraft(letterId) {
-    const data = await this.repository.get(letterId);
-    if (data.letter.status !== 'draft') throw new Error('Esta carta ya no es un borrador.');
-    this.localDraftKey = this.localDraftKeyFor(`letter:${letterId}`);
-    const local = await getLocalDraft(this.localDraftKey);
-    const localIsNewer = Boolean(local?.savedAt && new Date(local.savedAt).getTime() > new Date(data.letter.updated_at || data.letter.created_at).getTime());
-    this.state.editor = { letterId, creationRequestId: local?.creationRequestId || null, title: localIsNewer ? (local.title || '') : (data.letter.title || ''), body: localIsNewer ? (local.body || '') : (data.letter.body || ''), revision: data.letter.revision, parentLetterId: null, saving: false, saved: !localIsNewer, localOnly: localIsNewer, pendingSync: localIsNewer };
-    this.routeRequestId++;
-    this.state.routeLoading = false;
-    this.state.route = 'write';
-    history.replaceState(null, '', '#/write');
-    this.render();
-    if (localIsNewer) this.saveDraft(true).catch(() => {});
-  }
-
-  async startReply(letterId) {
-    const data = await this.repository.get(letterId);
-    this.localDraftKey = this.localDraftKeyFor(`reply:${letterId}`);
-    this.state.editor = { letterId: null, creationRequestId: crypto.randomUUID(), title: `Re: ${data.letter.title || 'Tu carta'}`.slice(0,180), body: '', revision: 1, parentLetterId: letterId, saving: false, saved: false };
-    const local = await getLocalDraft(this.localDraftKey);
-    if (local) this.state.editor = { ...this.state.editor, ...local };
-    this.routeRequestId++;
-    this.state.routeLoading = false;
-    this.state.route = 'write';
-    history.replaceState(null, '', '#/write');
-    this.render();
-  }
-
-  readEditorFromDom() {
-    const title = this.root.querySelector('#editor-title')?.value ?? this.state.editor?.title ?? '';
-    const body = sanitizeRichHtml(this.root.querySelector('#letter-editor')?.innerHTML ?? this.state.editor?.body ?? '');
-    return { title, body };
-  }
-
-  emergencyDraftStorageKey() {
-    return `nuestro-rincon:draft-emergency:${this.session?.user?.id || 'guest'}`;
-  }
-
-  persistEmergencyDraft(snapshot = null) {
-    const editor = snapshot || (this.state.editor ? { ...this.state.editor, ...this.readEditorFromDom() } : null);
-    if (!editor || editor.parentLetterId) return;
-    const userId = this.session?.user?.id;
-    if (!userId) return;
-    try {
-      localStorage.setItem(this.emergencyDraftStorageKey(), JSON.stringify({
-        ...editor,
-        key: this.localDraftKey || this.localDraftKeyFor(editor.letterId ? `letter:${editor.letterId}` : 'new'),
-        userId,
-        pendingSync: true,
-        savedAt: editor.savedAt || new Date().toISOString()
-      }));
-    } catch { /* IndexedDB conserva la copia principal. */ }
-  }
-
-  readEmergencyDraft(expectedKey = null) {
-    const userId = this.session?.user?.id;
-    if (!userId) return null;
-    try {
-      const raw = localStorage.getItem(this.emergencyDraftStorageKey());
-      if (!raw) return null;
-      const draft = JSON.parse(raw);
-      if (draft.userId !== userId || !draft.key || draft.parentLetterId) return null;
-      if (expectedKey && draft.key !== expectedKey) return null;
-      return { ...draft, pendingSync: true, localOnly: true };
-    } catch { return null; }
-  }
-
-  async restoreEmergencyDraft() {
-    const userId = this.session?.user?.id;
-    if (!userId) return;
-    const draft = this.readEmergencyDraft();
-    if (!draft) return;
-    if (draft.key.startsWith(`${userId}:`)) this.localDraftKey = draft.key;
-    await putLocalDraft(draft);
-  }
-
-  async hydrateEditorFromLocal(storageKey, identity) {
-    const local = await getLocalDraft(storageKey);
-    if (!local || this.state.route !== 'write' || this.state.editor?.creationRequestId !== identity) return;
-    const emergency = this.readEmergencyDraft(storageKey);
-    const newest = [local, emergency].filter(Boolean)
-      .sort((a,b) => new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime())[0];
-    if (!newest) return;
-    const current = this.state.editor;
-    if (new Date(newest.savedAt || 0).getTime() < new Date(current.savedAt || 0).getTime()) return;
-    this.state.editor = { ...current, ...newest, creationRequestId: newest.creationRequestId || identity };
-    this.render();
-    if (this.state.editor.pendingSync || this.state.editor.localOnly) this.saveDraft(true).catch(() => {});
-  }
-
-  flushDraftOnExit() {
-    if (!this.state.editor || this.state.editor.parentLetterId) return;
-    const snapshot = { ...this.state.editor, ...this.readEditorFromDom(), saving: true, saved: false, pendingSync: true, localOnly: true };
-    this.persistEmergencyDraft(snapshot);
-    const storageKey = this.localDraftKey || this.localDraftKeyFor(snapshot.letterId ? `letter:${snapshot.letterId}` : 'new');
-    putLocalDraft({ key: storageKey, ...snapshot }).then(() => {
-      if (navigator.onLine) this.enqueueDraftSync(snapshot, storageKey, { keepalive: true }).catch(() => {});
-    }).catch(() => {});
-  }
-
-  async persistLocalDraft() {
-    if (!this.state.editor) return;
-    const current = this.readEditorFromDom();
-    this.state.editor = { ...this.state.editor, ...current, savedAt: this.state.editor.savedAt || new Date().toISOString(), pendingSync: true, saved: false };
-    const storageKey = this.localDraftKey || this.localDraftKeyFor(this.state.editor.letterId ? `letter:${this.state.editor.letterId}` : 'new');
-    this.persistEmergencyDraft(this.state.editor);
-    await putLocalDraft({ key: storageKey, ...this.state.editor, pendingSync: true });
-  }
-
-  async saveDraft(silent = false, options = {}) {
-    if (!this.state.editor) return null;
-    const current = this.readEditorFromDom();
-    const editor = { ...this.state.editor, ...current };
-    if (plainTextFromHtml(editor.body).length > 100000) throw new Error('La carta supera el límite de 100.000 caracteres.');
-    const storageKey = this.localDraftKey || this.localDraftKeyFor(editor.letterId ? `letter:${editor.letterId}` : 'new');
-    if (editor.letterId && this.discardedDraftIds.has(editor.letterId)) {
-      await this.clearLocalDraftForLetter(editor.letterId, this.localDraftKey);
-      return { status: 'discarded' };
-    }
-    const snapshot = { ...editor, inputVersion: this.editorInputVersion, savedAt: new Date().toISOString(), saving: true, saved: false, pendingSync: true, localOnly: true };
-    this.state.editor = snapshot;
-    this.persistEmergencyDraft(snapshot);
-    await putLocalDraft({ key: storageKey, ...snapshot });
-
-    const title = editor.title.trim() || 'Sin título';
-    if (editor.parentLetterId) {
-      this.state.editor = { ...editor, title, saving: false, saved: true, localOnly: true, pendingSync: false };
-      await putLocalDraft({ key: storageKey, ...this.state.editor });
-      this.updateSaveStatus('Respuesta guardada en este dispositivo');
-      if (!silent) showToast('La respuesta se guardó en este dispositivo; se enviará al confirmar.', 'success');
-      return { status: 'local' };
-    }
-    if (!navigator.onLine) {
-      this.state.editor = { ...editor, saving: false, saved: true, localOnly: true, pendingSync: true };
-      this.updateSaveStatus('Sin conexión · copia local conservada');
-      if (!silent) showToast('Sin conexión. La copia local está guardada.', 'error');
-      return { status: 'local' };
-    }
-
-    try {
-      const result = await this.enqueueDraftSync({ ...snapshot, title }, storageKey, options);
-      if (result?.status === 'discarded') {
-        this.updateSaveStatus('Este borrador está en la papelera. Recupéralo antes de seguir editándolo.');
-      } else if (result?.status === 'saved' || result?.status === 'created') {
-        this.updateSaveStatus('Guardado en la nube');
-        if (!silent) showToast('Borrador guardado.', 'success');
-      } else if (result?.status === 'conflict') {
-        this.updateSaveStatus('Hay cambios nuevos en el servidor; conserva esta copia local antes de continuar.');
-        if (!silent) showToast('Conflicto de edición. Tu copia local permanece intacta.', 'error');
-      }
-      return result;
-    } catch (error) {
-      if (editor.letterId && this.discardedDraftIds.has(editor.letterId)) {
-        await this.clearLocalDraftForLetter(editor.letterId, storageKey);
-        return { status: 'discarded' };
-      }
-      const latest = this.state.editor?.creationRequestId === editor.creationRequestId || this.state.editor?.letterId === editor.letterId
-        ? { ...this.state.editor, ...this.readEditorFromDom() }
-        : editor;
-      this.state.editor = { ...latest, saving: false, saved: true, localOnly: true, pendingSync: true };
-      await putLocalDraft({ key: storageKey, ...this.state.editor });
-      this.persistEmergencyDraft(this.state.editor);
-      this.updateSaveStatus('No se pudo sincronizar · copia local conservada');
-      if (error.status === 401) this.forceLogout();
-      throw error;
-    }
-  }
-
-  draftSyncQueueKey() {
-    // La identidad del borrador cambia de `new` a `letter:<id>` al crearse.
-    // Un único carril por cuenta evita que ambas claves guarden a la vez con
-    // la misma revisión y provoquen conflictos artificiales.
-    return this.localDraftKeyFor('__draft-sync__');
-  }
-
-  enqueueDraftSync(snapshot, storageKey, options = {}) {
-    const letterId = snapshot?.letterId;
-    if (letterId && this.discardedDraftIds.has(letterId)) {
-      return this.clearLocalDraftForLetter(letterId, storageKey).then(() => ({ status: 'discarded' }));
-    }
-    const queueKey = this.draftSyncQueueKey();
-    const previous = this.draftQueues.get(queueKey) || Promise.resolve();
-    const next = previous.catch(() => {}).then(() => this.syncDraftSnapshot(snapshot, storageKey, options));
-    this.draftQueues.set(queueKey, next);
-    next.finally(() => { if (this.draftQueues.get(queueKey) === next) this.draftQueues.delete(queueKey); }).catch(() => {});
-    return next;
-  }
-
-  async waitForDraftSyncQueue() {
-    const queueKey = this.draftSyncQueueKey();
-    // Una tarea puede encadenar otra al detectar texto escrito mientras guarda.
-    // Esperamos también esas continuaciones antes de confirmar el descarte.
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const pending = this.draftQueues.get(queueKey);
-      if (!pending) {
-        await Promise.resolve();
-        if (!this.draftQueues.has(queueKey)) return;
-        continue;
-      }
-      await pending.catch(() => {});
-      await Promise.resolve();
-      if (!this.draftQueues.has(queueKey)) return;
-    }
-    throw new ApiError('El borrador todavía se está sincronizando. Vuelve a intentar descartarlo.', 409, 'DRAFT_SYNC_BUSY');
-  }
-
-  async clearLocalDraftForLetter(letterId, storageKey = null) {
-    const canonicalKey = this.localDraftKeyFor(`letter:${letterId}`);
-    const keys = new Set([canonicalKey, storageKey].filter(Boolean));
-    for (const [source, target] of this.draftIdentity.entries()) {
-      if (source === canonicalKey || target === canonicalKey || source === storageKey || target === storageKey) keys.add(source);
-    }
-    await Promise.all([...keys].map(key => deleteLocalDraft(key)));
-    for (const [source, target] of this.draftIdentity.entries()) {
-      if (keys.has(source) || keys.has(target)) this.draftIdentity.delete(source);
-    }
-    const emergency = this.readEmergencyDraft();
-    if (emergency && (emergency.letterId === letterId || keys.has(emergency.key))) {
-      try { localStorage.removeItem(this.emergencyDraftStorageKey()); } catch {}
-    }
-    if (this.localDraftKey && keys.has(this.localDraftKey)) this.localDraftKey = this.localDraftKeyFor('new');
-    if (this.state.editor?.letterId === letterId) {
-      this.state.editor = null;
-      if (this.state.route === 'write') {
-        this.state.route = 'drafts';
-        history.replaceState(null, '', '#/drafts');
-        this.render();
+    } finally {
+      if (guardedLetterId) {
+        this.pendingLetterActions.delete(guardedLetterId);
+        previousDisabled.forEach(([button, wasDisabled]) => {
+          if (!button.isConnected) return;
+          button.disabled = wasDisabled;
+          button.removeAttribute('aria-busy');
+        });
+        if (previousDisabled.some(([button]) => !button.isConnected)) this.renderCurrentRoute();
       }
     }
   }
 
-  async discardLetter(letterId, isDraft) {
-    if (!letterId) throw new Error('No se identificó la carta que quieres descartar.');
-    const currentItem = this.state.letters.find(item => item.id === letterId);
-    const selectedItem = this.state.selectedLetter?.letter?.id === letterId ? this.state.selectedLetter.letter : null;
-    const source = currentItem || selectedItem;
-    const wasAlreadyInTrash = Boolean(source?.isInTrash);
-    const targetRoute = this.state.route === 'letter' ? (this.previousListRoute || 'inbox') : this.state.route;
+}
 
-    if (isDraft) {
-      this.discardedDraftIds.add(letterId);
-      window.clearTimeout(this.autosaveTimer);
-      try {
-        await this.waitForDraftSyncQueue();
-      } catch (error) {
-        this.discardedDraftIds.delete(letterId);
-        throw error;
-      }
-    }
-
-    try {
-      const result = await this.repository.moveToTrash(letterId);
-      if (!['trashed', 'already_trashed'].includes(result?.status)) {
-        throw new Error('La carta no se movió a la papelera. Actualiza la lista e inténtalo de nuevo.');
-      }
-      if (isDraft) await this.clearLocalDraftForLetter(letterId, this.localDraftKeyFor(`letter:${letterId}`));
-
-      this.state.letters = (this.state.letters || []).filter(item => item.id !== letterId);
-      if (this.state.selectedLetter?.letter?.id === letterId) this.state.selectedLetter = null;
-      if (isDraft && !wasAlreadyInTrash) {
-        this.state.dashboard.drafts = Math.max(0, Number(this.state.dashboard.drafts || 0) - 1);
-      }
-
-      for (const [cacheKey, entry] of this.routeCache.entries()) {
-        const folder = cacheKey.split(':', 1)[0];
-        let data = entry.data;
-        if (Array.isArray(data?.letters?.items)) {
-          let items = data.letters.items.filter(item => item.id !== letterId);
-          if (folder === 'trash' && source && !items.some(item => item.id === letterId)) {
-            items = [{ ...source, isInTrash: true }, ...items];
-          }
-          data = { ...data, letters: { ...data.letters, items } };
-        }
-        if (folder === 'home' && data?.dashboard && isDraft && !wasAlreadyInTrash) {
-          data = { ...data, dashboard: { ...data.dashboard, drafts: Math.max(0, Number(data.dashboard.drafts || 0) - 1) } };
-        }
-        this.routeCache.set(cacheKey, { ...entry, data, at: 0 });
-      }
-
-      this.invalidateRouteCache();
-      if (this.state.route === 'letter') {
-        this.state.route = targetRoute;
-        history.replaceState(null, '', `#/${targetRoute}`);
-      }
-      this.state.routeLoading = false;
-      this.render();
-      showToast(result.status === 'already_trashed' ? 'La carta ya estaba en la papelera.' : 'La carta se movió a la papelera.', 'success');
-
-      const requestId = ++this.routeRequestId;
-      const cacheKey = this.routeCacheKey(this.state.route);
-      this.refreshRouteData(this.state.route, cacheKey, requestId, true).catch(() => {});
-    } catch (error) {
-      if (isDraft) this.discardedDraftIds.delete(letterId);
-      throw error;
-    }
-  }
-
-  queueDraftSync(snapshot, storageKey) {
-    if (snapshot?.letterId && this.discardedDraftIds.has(snapshot.letterId)) {
-      this.clearLocalDraftForLetter(snapshot.letterId, storageKey).catch(() => {});
-      return;
-    }
-    this.persistEmergencyDraft(snapshot);
-    putLocalDraft({ key: storageKey, ...snapshot, pendingSync: true, localOnly: true }).then(() => {
-      if (snapshot?.letterId && this.discardedDraftIds.has(snapshot.letterId)) {
-        return this.clearLocalDraftForLetter(snapshot.letterId, storageKey);
-      }
-      return this.enqueueDraftSync({ ...snapshot, pendingSync: true }, storageKey);
-    }).catch(() => {});
-  }
-
-  async syncPendingLocalDrafts() {
-    if (!this.session?.user?.id || !navigator.onLine) return;
-    const drafts = await getLocalDraftsForUser(this.session.user.id);
-    for (const draft of drafts) {
-      if (!draft || draft.parentLetterId) continue;
-      if (draft.pendingSync || draft.localOnly || draft.saved === false || !draft.letterId) {
-        await this.enqueueDraftSync(draft, draft.key).catch(() => {});
-      }
-    }
-  }
-
-  async syncDraftSnapshot(initialSnapshot, initialStorageKey, options = {}) {
-    if (!initialSnapshot || initialSnapshot.parentLetterId || !navigator.onLine) return { status: 'local' };
-    let storageKey = this.draftIdentity.get(initialStorageKey) || initialStorageKey;
-    let snapshot = { ...initialSnapshot };
-    if (snapshot.letterId && this.discardedDraftIds.has(snapshot.letterId)) {
-      await this.clearLocalDraftForLetter(snapshot.letterId, storageKey);
-      return { status: 'discarded' };
-    }
-    const local = await getLocalDraft(storageKey);
-    if (local && (new Date(local.savedAt || 0).getTime() >= new Date(snapshot.savedAt || 0).getTime())) snapshot = { ...snapshot, ...local };
-    const requestOptions = options.keepalive ? { keepalive: true, timeoutMs: 7000 } : {};
-    const title = snapshot.title?.trim() || 'Sin título';
-
-    const storeSynced = async (draft, latestSnapshot, currentStorageKey) => {
-      if (this.discardedDraftIds.has(draft.id)) {
-        await this.clearLocalDraftForLetter(draft.id, currentStorageKey);
-        return { status: 'discarded' };
-      }
-      const targetKey = this.localDraftKeyFor(`letter:${draft.id}`);
-      const localLatest = await getLocalDraft(currentStorageKey);
-      const emergencyLatest = this.readEmergencyDraft(currentStorageKey);
-      const freshest = [latestSnapshot, localLatest, emergencyLatest].filter(Boolean)
-        .sort((a,b) => new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime())[0] || latestSnapshot;
-      const currentMatches = this.state.editor && (
-        this.state.editor.creationRequestId === latestSnapshot.creationRequestId ||
-        this.state.editor.letterId === latestSnapshot.letterId ||
-        this.state.editor.letterId === draft.id
-      );
-      const liveEditor = currentMatches && this.state.route === 'write'
-        ? { ...this.state.editor, ...this.readEditorFromDom() }
-        : null;
-      const liveIsNewer = Boolean(liveEditor && (
-        liveEditor.title !== freshest.title || liveEditor.body !== freshest.body ||
-        this.editorInputVersion > Number(freshest.inputVersion || 0)
-      ));
-      const source = liveIsNewer ? { ...freshest, ...liveEditor, inputVersion: this.editorInputVersion } : freshest;
-      const persisted = {
-        ...source,
-        letterId: draft.id,
-        creationRequestId: source.creationRequestId || draft.creationRequestId || crypto.randomUUID(),
-        revision: draft.revision || 1,
-        title: source.title ?? draft.title ?? title,
-        body: source.body ?? draft.body ?? '',
-        saving: false,
-        saved: !liveIsNewer,
-        localOnly: liveIsNewer,
-        pendingSync: liveIsNewer,
-        conflict: false
-      };
-      await putLocalDraft({ key: targetKey, ...persisted });
-      if (currentStorageKey !== targetKey) {
-        this.draftIdentity.set(currentStorageKey, targetKey);
-        await deleteLocalDraft(currentStorageKey);
-      }
-      if (currentMatches) {
-        this.localDraftKey = targetKey;
-        this.state.editor = persisted;
-        if (this.state.route === 'write') this.updateSaveStatus(liveIsNewer ? 'Sincronizando los últimos cambios…' : 'Guardado en la nube');
-      } else if (this.localDraftKey === currentStorageKey) {
-        this.localDraftKey = null;
-      }
-      if (liveIsNewer) {
-        this.persistEmergencyDraft(persisted);
-        this.enqueueDraftSync(persisted, targetKey).catch(() => {});
-      } else if (emergencyLatest && !(this.state.editor && this.state.route === 'write' && !currentMatches)) {
-        // No borres la emergencia de una carta diferente que se esté editando.
-        try { localStorage.removeItem(this.emergencyDraftStorageKey()); } catch {}
-      }
-      this.invalidateRouteCache();
-      return { status: 'saved', draft };
-    };
-
-    if (!snapshot.letterId) {
-      let creationRequestId = snapshot.creationRequestId || crypto.randomUUID();
-      let created = await this.repository.createDraft({ creationRequestId, title, body: snapshot.body || '' }, requestOptions);
-      if (created?.status === 'discarded' && created?.draft?.id) {
-        this.discardedDraftIds.add(created.draft.id);
-        await this.clearLocalDraftForLetter(created.draft.id, storageKey);
-        return { status: 'discarded' };
-      }
-      if (created?.draft?.status === 'purged') {
-        creationRequestId = crypto.randomUUID();
-        const recoveredLocal = { ...snapshot, creationRequestId, pendingSync: true, localOnly: true, savedAt: new Date().toISOString() };
-        await putLocalDraft({ key: storageKey, ...recoveredLocal });
-        this.persistEmergencyDraft(recoveredLocal);
-        created = await this.repository.createDraft({ creationRequestId, title, body: snapshot.body || '' }, requestOptions);
-      }
-      if (created.status !== 'created' || !created.draft?.id || created.draft.status !== 'draft') throw new ApiError('El servidor no confirmó la creación de un borrador nuevo.', 502, 'DRAFT_CREATE_UNCONFIRMED');
-      let latest = await getLocalDraft(storageKey) || snapshot;
-      const emergencyLatest = this.readEmergencyDraft(storageKey);
-      if (emergencyLatest && new Date(emergencyLatest.savedAt || 0) > new Date(latest.savedAt || 0)) latest = { ...latest, ...emergencyLatest };
-      latest = { ...snapshot, ...latest, letterId: created.draft.id, creationRequestId, revision: created.draft.revision || 1 };
-      if (latest.title !== title || latest.body !== (snapshot.body || '')) {
-        const saved = await this.repository.saveDraft({ letterId: created.draft.id, title: latest.title?.trim() || 'Sin título', body: latest.body || '', expectedRevision: created.draft.revision || 1 }, requestOptions);
-        if (saved.status === 'not_found') throw new ApiError('El servidor creó el borrador pero no lo encontró al guardar los últimos cambios.', 404, 'DRAFT_NOT_FOUND');
-        if (saved.status !== 'saved') throw new ApiError('No se pudieron guardar los últimos cambios del borrador.', 502, 'DRAFT_SAVE_UNCONFIRMED');
-        return storeSynced(saved.draft || created.draft, latest, storageKey);
-      }
-      return storeSynced(created.draft, latest, storageKey);
-    }
-
-    try {
-      const result = await this.repository.saveDraft({
-        letterId: snapshot.letterId,
-        title,
-        body: snapshot.body || '',
-        expectedRevision: snapshot.revision || 1
-      }, requestOptions);
-      if (result.status === 'discarded') {
-        this.discardedDraftIds.add(snapshot.letterId);
-        await this.clearLocalDraftForLetter(snapshot.letterId, storageKey);
-        return { status: 'discarded' };
-      }
-      if (result.status === 'conflict') {
-        const remote = result.draft;
-        if (remote?.id === snapshot.letterId && remote.status === 'draft' && remote.title === title && remote.body === (snapshot.body || '')) {
-          return storeSynced(remote, snapshot, storageKey);
-        }
-        const conflicted = { ...snapshot, conflict: true, localOnly: true, pendingSync: true, saved: true, saving: false };
-        await putLocalDraft({ key: storageKey, ...conflicted });
-        if (this.state.editor?.letterId === snapshot.letterId) this.state.editor = conflicted;
-        return { status: 'conflict' };
-      }
-      if (result.status === 'not_found') throw new ApiError('El borrador ya no existe en el servidor.', 404, 'DRAFT_NOT_FOUND');
-      if (result.status !== 'saved' || !result.draft) throw new ApiError('El servidor no confirmó el guardado del borrador.', 502, 'DRAFT_SAVE_UNCONFIRMED');
-      let latest = await getLocalDraft(storageKey) || snapshot;
-      latest = { ...snapshot, ...latest };
-      if (latest.title !== snapshot.title || latest.body !== snapshot.body) {
-        const second = await this.repository.saveDraft({
-          letterId: snapshot.letterId,
-          title: latest.title?.trim() || 'Sin título',
-          body: latest.body || '',
-          expectedRevision: result.draft.revision || snapshot.revision || 1
-        }, requestOptions);
-        if (second.status === 'not_found') throw new ApiError('El borrador ya no existe en el servidor.', 404, 'DRAFT_NOT_FOUND');
-        if (second.status === 'discarded') {
-          this.discardedDraftIds.add(snapshot.letterId);
-          await this.clearLocalDraftForLetter(snapshot.letterId, storageKey);
-          return { status: 'discarded' };
-        }
-        if (second.status === 'conflict') {
-          if (second.draft?.id === snapshot.letterId && second.draft.status === 'draft' && second.draft.title === (latest.title?.trim() || 'Sin título') && second.draft.body === (latest.body || '')) {
-            return storeSynced(second.draft, latest, storageKey);
-          }
-          await putLocalDraft({ key: storageKey, ...latest, conflict: true, localOnly: true, pendingSync: true, saving: false });
-          return { status: 'conflict' };
-        }
-        if (second.status !== 'saved' || !second.draft) throw new ApiError('El servidor no confirmó los últimos cambios.', 502, 'DRAFT_SAVE_UNCONFIRMED');
-        return storeSynced(second.draft, latest, storageKey);
-      }
-      return storeSynced(result.draft, latest, storageKey);
-    } catch (error) {
-      // Un ID purgado, perdido o inaccesible se reemplaza con un borrador nuevo;
-      // jamás se elimina la copia local hasta confirmar la creación y guardado.
-      if (error.status !== 404 && error.code !== 'DRAFT_NOT_FOUND') throw error;
-      const replacementRequestId = crypto.randomUUID();
-      const replacement = await this.repository.createDraft({
-        creationRequestId: replacementRequestId,
-        title: snapshot.title?.trim() || 'Sin título',
-        body: snapshot.body || ''
-      }, requestOptions);
-      if (replacement.status !== 'created' || !replacement.draft?.id) throw new ApiError('No se pudo recuperar la copia local como un nuevo borrador.', 502, 'DRAFT_RECOVERY_FAILED');
-      let latest = await getLocalDraft(storageKey) || snapshot;
-      latest = { ...snapshot, ...latest, creationRequestId: replacementRequestId, letterId: replacement.draft.id };
-      let finalDraft = replacement.draft;
-      if (latest.title !== (replacement.draft.title || '') || latest.body !== (replacement.draft.body || '')) {
-        const saved = await this.repository.saveDraft({
-          letterId: replacement.draft.id,
-          title: latest.title?.trim() || 'Sin título',
-          body: latest.body || '',
-          expectedRevision: replacement.draft.revision || 1
-        }, requestOptions);
-        if (saved.status !== 'saved' || !saved.draft) throw new ApiError('Se recuperó el borrador, pero falta confirmar la última edición.', 502, 'DRAFT_RECOVERY_SAVE_FAILED');
-        finalDraft = saved.draft;
-      }
-      const oldStorageKey = storageKey;
-      const targetKey = this.localDraftKeyFor(`letter:${finalDraft.id}`);
-      const persisted = { ...latest, letterId: finalDraft.id, revision: finalDraft.revision || 1, saving: false, saved: true, localOnly: false, pendingSync: false, conflict: false };
-      await putLocalDraft({ key: targetKey, ...persisted });
-      if (oldStorageKey !== targetKey) {
-        this.draftIdentity.set(oldStorageKey, targetKey);
-        await deleteLocalDraft(oldStorageKey);
-      }
-      const currentMatches = this.state.editor && (this.state.editor.letterId === snapshot.letterId || this.state.editor.creationRequestId === snapshot.creationRequestId);
-      if (currentMatches) {
-        this.localDraftKey = targetKey;
-        this.state.editor = persisted;
-        if (this.state.route === 'write') this.updateSaveStatus('Borrador recuperado y guardado');
-      }
-      try { localStorage.removeItem(this.emergencyDraftStorageKey()); } catch {}
-      this.invalidateRouteCache();
-      return { status: 'saved', draft: finalDraft, recovered: true };
-    }
-  }
-
-  updateSaveStatus(text) {
-    const status = this.root.querySelector('#save-status');
-    if (status) status.textContent = text;
-  }
-
-  execFormat(command) {
-    const editor = this.root.querySelector('#letter-editor');
-    if (!editor) return;
-    editor.focus();
-    document.execCommand(command, false, null);
-    this.onInput({ target: editor });
-  }
-
-  async previewSend() {
-    if (!navigator.onLine) throw new Error('Necesitas conexión para enviar. El borrador permanece guardado en este dispositivo.');
-    await this.saveDraft(true);
-    const editor = this.state.editor;
-    if (!editor?.parentLetterId && (!editor?.letterId || editor.localOnly || editor.conflict)) throw new Error('No se pudo sincronizar el borrador con el servidor. Se conserva la copia local; vuelve a intentarlo antes de enviar.');
-    if (!plainTextFromHtml(editor?.body || '').trim()) throw new Error('Escribe el contenido de la carta antes de enviarla.');
-    const preview = sanitizeRichHtml(editor.body);
-    const modal = document.createElement('div');
-    modal.className = 'modal-backdrop';
-    modal.id = 'confirm-modal';
-    modal.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="send-confirm-title"><span class="eyebrow">Un último vistazo</span><h2 id="send-confirm-title">¿Enviar esta carta?</h2><p>Después de enviarla quedará registrada como correspondencia y ya no se editará silenciosamente.</p><article class="letter-paper" style="padding:20px;margin-top:14px"><h2 style="font-size:23px">${escapeHtml(editor.title || 'Sin título')}</h2><div class="letter-body">${preview}</div></article><div class="modal-actions"><button class="btn btn-ghost" data-action="dismiss-modal">Seguir revisando</button><button class="btn btn-primary" data-action="confirm-send">Enviar carta ↗</button></div></section>`;
-    document.body.append(modal);
-  }
-
-  async confirmSend() {
-    const editor = { ...this.state.editor, ...this.readEditorFromDom() };
-    const title = editor.title.trim() || 'Sin título';
-    let result;
-    if (editor.parentLetterId) {
-      result = await this.repository.reply({ parentLetterId: editor.parentLetterId, creationRequestId: editor.creationRequestId || crypto.randomUUID(), title, body: editor.body });
-      if (result.status !== 'created') throw new Error('No se pudo enviar la respuesta.');
-      await deleteLocalDraft(this.localDraftKey);
-    } else {
-      if (!editor.letterId) await this.saveDraft(true);
-      const current = this.state.editor;
-      if (!current?.letterId || current.localOnly || current.conflict) throw new Error('El borrador no está sincronizado. No se envió la versión del servidor.');
-      result = await this.repository.sendDraft({ letterId: current.letterId, expectedRevision: current.revision || 1 });
-      if (result.status === 'recipient_unavailable') throw new Error('Tu borrador está guardado, pero la segunda cuenta todavía no está creada. Cuando tu esposa se registre podrás enviarlo.');
-      if (result.status !== 'sent' && result.status !== 'already_sent') throw new Error('No se pudo enviar la carta.');
-      await deleteLocalDraft(this.localDraftKeyFor(`letter:${current.letterId}`));
-      try { localStorage.removeItem(this.emergencyDraftStorageKey()); } catch {}
-      this.localDraftKey = null;
-    }
-    this.closeModal();
-    this.state.editor = null;
-    this.invalidateRouteCache();
-    showToast('Tu carta fue enviada.', 'success');
-    await this.openRoute('sent');
-  }
-
-  closeModal() { document.querySelector('#confirm-modal')?.remove(); }
-
-  async downloadTxt(letterId) {
-    const data = await this.repository.get(letterId);
-    const letter = data.letter;
-    const text = `${letter.title || 'Sin título'}\nDe: ${letter.senderName}\nPara: ${letter.recipientName}\nFecha: ${letter.sent_at || letter.created_at}\n\n${plainTextFromHtml(letter.body)}`;
-    const blob = new Blob([`\ufeff${text}`], { type: 'text/plain;charset=utf-8' });
-    this.downloadBlob(blob, `${this.fileName(letter.title)}.txt`);
-  }
-
-  async downloadHtml(letterId) {
-    const data = await this.repository.get(letterId);
-    const letter = data.letter;
-    const title = escapeHtml(letter.title || 'Sin título');
-    const sender = escapeHtml(letter.senderName || 'Remitente');
-    const recipient = escapeHtml(letter.recipientName || 'Destinatario');
-    const date = escapeHtml(new Date(letter.sent_at || letter.created_at).toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }));
-    const body = sanitizeRichHtml(letter.body || '');
-    const documentHtml = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{margin:0;padding:32px;background:#f4eee5;color:#403630;font:16px/1.8 Georgia,serif}.letter{max-width:760px;margin:24px auto;padding:clamp(28px,7vw,64px);background:#fffdf8;border:1px solid #eadfd2}.meta{display:flex;flex-wrap:wrap;gap:12px;color:#88776e;font:12px/1.5 Arial,sans-serif;border-bottom:1px solid #eadfd2;padding-bottom:18px;margin-bottom:26px}.body{overflow-wrap:anywhere}.body p{margin:.5em 0}.body blockquote{border-left:2px solid #c89f91;padding-left:15px;color:#765d52}</style></head><body><main class="letter"><h1>${title}</h1><div class="meta"><span>De: ${sender}</span><span>Para: ${recipient}</span><span>${date}</span></div><div class="body">${body}</div><p><em>Con cariño, ${sender}</em></p></main></body></html>`;
-    const blob = new Blob([`\ufeff${documentHtml}`], { type: 'text/html;charset=utf-8' });
-    this.downloadBlob(blob, `${this.fileName(letter.title)}.html`);
-  }
-
-  downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = filename; anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  fileName(title) { return (title || 'carta').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9-_]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'carta'; }
-
-  async refreshSessions() {
-    if (!this.session?.user || this.state.route !== 'settings' || !navigator.onLine) return;
-    try {
-      const result = await this.repository.sessions();
-      const sessions = result.sessions || [];
-      this.state.sessions = sessions;
-      if (!sessions.some(item => item.isCurrent)) {
-        this.forceLogout();
-        return;
-      }
-      if (this.state.route === 'settings') this.render();
-    } catch (error) {
-      if (error.status === 401) this.forceLogout();
-      throw error;
-    }
-  }
-
-  async checkCurrentSession() {
-    if (!this.session?.user || !navigator.onLine) return false;
-    try {
-      const result = await this.session.api.auth('session');
-      if (result?.sessionId) {
-        if (this.session.sessionId && this.session.sessionId !== result.sessionId) {
-          this.forceLogout();
-          return false;
-        }
-        this.session.sessionId = result.sessionId;
-      }
-      if (result?.user) {
-        this.session.user = { ...this.session.user, ...result.user };
-        this.state.user = this.session.user;
-      }
-      return true;
-    } catch (error) {
-      if (error.status !== 401) return false;
-      // Si solo caducó el access token, rotamos el refresh token. Una sesión
-      // revocada no podrá renovarlo y se cerrará automáticamente aquí mismo.
-      try {
-        await this.session.refreshSession();
-        const verified = await this.session.api.auth('session');
-        if (verified?.sessionId) this.session.sessionId = verified.sessionId;
-        if (verified?.user) this.session.user = { ...this.session.user, ...verified.user };
-        return true;
-      } catch {
-        this.forceLogout();
-        return false;
-      }
-    }
-  }
-
-  startSessionRefreshPolling() {
-    this.stopSessionRefreshPolling();
-    this.sessionRefreshTimer = window.setInterval(() => {
-      if (!this.session.user || document.hidden || !navigator.onLine) return;
-      this.checkCurrentSession().then(valid => {
-        if (valid && this.state.route === 'settings') this.refreshSessions().catch(() => {});
-      }).catch(() => {});
-    }, 10000);
-  }
-
-  stopSessionRefreshPolling() {
-    if (this.sessionRefreshTimer) window.clearInterval(this.sessionRefreshTimer);
-    this.sessionRefreshTimer = null;
-  }
-
-  async refreshNotifications() {
-    const result = await this.repository.notifications();
-    this.state.notifications = result.items || [];
-    if (this.state.route !== 'notifications') this.render();
-  }
-
-  startNotificationPolling() {
-    this.stopNotificationPolling();
-    this.pollTimer = window.setInterval(() => {
-      if (this.session.user && !document.hidden && navigator.onLine) this.refreshNotifications().catch(() => {});
-    }, 45000);
-  }
-
-  stopNotificationPolling() { if (this.pollTimer) window.clearInterval(this.pollTimer); this.pollTimer = null; }
-
-  forceLogout() {
-    this.stopNotificationPolling();
-    this.stopSessionRefreshPolling();
-    this.invalidateRouteCache();
-    this.state.routeLoading = false;
-    this.applyTheme(this.readLastTheme() || 'system');
-    this.session.clearSession();
-    this.view.renderLogin('Tu sesión ha expirado. Vuelve a iniciar sesión.');
-  }
+for (const modulePrototype of [
+  NavigationController.prototype,
+  AuthController.prototype,
+  LetterController.prototype,
+  DraftController.prototype,
+  SettingsController.prototype,
+  NotificationController.prototype
+]) {
+  const descriptors = Object.getOwnPropertyDescriptors(modulePrototype);
+  delete descriptors.constructor;
+  Object.defineProperties(AppController.prototype, descriptors);
 }

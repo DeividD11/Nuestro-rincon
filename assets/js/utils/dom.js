@@ -203,10 +203,30 @@ export function showToast(message, type = 'info', options = {}) {
   }
 
   const meta = TOAST_META[safeType];
+  const announcement = `${meta.title}. ${String(message ?? '')}`.trim();
+  const announcerId = safeType === 'error' ? 'app-alert-announcer' : 'app-announcer';
+  let announcer = document.getElementById(announcerId);
+  if (!announcer) {
+    announcer = document.createElement('div');
+    announcer.id = announcerId;
+    announcer.className = 'sr-only';
+    announcer.setAttribute('role', safeType === 'error' ? 'alert' : 'status');
+    announcer.setAttribute('aria-live', safeType === 'error' ? 'assertive' : 'polite');
+    announcer.setAttribute('aria-atomic', 'true');
+    document.body.append(announcer);
+  }
+  // Vaciar y reinsertar permite anunciar también dos avisos consecutivos iguales.
+  if (announcer._announceTimer) window.clearTimeout(announcer._announceTimer);
+  announcer.textContent = '';
+  announcer._announceTimer = window.setTimeout(() => {
+    announcer.textContent = announcement;
+    announcer._announceTimer = null;
+  }, 35);
+
   const toast = document.createElement('article');
   toast.className = `toast app-toast toast-${safeType}`;
-  toast.setAttribute('role', safeType === 'error' ? 'alert' : 'status');
-  toast.setAttribute('aria-atomic', 'true');
+  toast.setAttribute('role', 'group');
+  toast.setAttribute('aria-label', announcement);
 
   const iconNode = document.createElement('span');
   iconNode.className = 'toast-icon';

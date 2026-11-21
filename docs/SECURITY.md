@@ -12,14 +12,18 @@
 ## Controles implementados
 
 - No se utiliza Supabase Auth ni `auth.users` como identidad de la aplicación.
-- Registro por nombre de usuario/contraseña; máximo de dos cuentas.
+- Registro por nombre de usuario/contraseña con invitación privada obligatoria; máximo de dos cuentas activas.
+- Códigos de invitación aleatorios de 256 bits, prefijo/versionado `NR1`, caducidad de siete días y un solo uso. Solo su hash SHA-256 con separación de dominio se almacena en PostgreSQL.
+- El consumo de la invitación y la creación de `app_users`, perfil, preferencias, hash del código de recuperación y recibo idempotente suceden dentro de una única función/transacción PostgreSQL. Una excepción revierte todo el conjunto. Los reintentos posteriores verifican la misma contraseña, invitación, usuario, clave de petición y código; pasan también por el limitador de intentos y no crean otra cuenta ni consumen otra invitación.
+- La primera cuenta activa puede crear o revocar la única invitación pendiente desde Configuración. En una base vacía, el primer código se genera desde SQL Editor mediante una función restringida al rol `postgres`.
 - Las cuentas se crean activas sin email, verificación por correo ni proveedor transaccional.
 - PBKDF2-HMAC-SHA256 mediante Web Crypto, 600.000 iteraciones y sal aleatoria individual.
 - Token de acceso aleatorio de 32 bytes, 15 minutos de vida; solo su hash queda persistido.
 - Refresh tokens aleatorios y hasheados en PostgreSQL, rotación y detección de reutilización.
 - Sesiones con expiración por inactividad (7 días), expiración absoluta (30 días), cierre y revocación.
-- Intentos de login/registro/recuperación limitados por hash de identificador y ventanas controladas en PostgreSQL.
-- Un código de recuperación de un solo uso por cuenta, guardado como hash y mostrado únicamente durante el registro.
+- El diseño pendiente `20261119064344_auth_attempt_rate_limits.sql` amplía la limitación de intentos a cuenta+IP (5 intentos fallidos en 15 minutos antes de iniciar enfriamiento progresivo) y a IP (25 fallos en 15 minutos). Los hashes de identificador e IP se calculan con HMAC y no se guarda el texto del nombre de usuario ni la dirección IP. Los intentos distribuidos contra una misma cuenta se auditan con deduplicación temporal. Desde el décimo fallo distribuido, se añade fricción progresiva únicamente a las respuestas fallidas (100 ms hasta un máximo de 1,6 s); una contraseña o código correcto no se ralentiza ni se bloquea. Así se eleva el coste de probar credenciales desde distintas IP sin permitir que un tercero provoque un bloqueo de cuenta. El enfriamiento progresivo se aplica solo a la combinación cuenta+IP y al volumen de una IP. La migración aún no está aplicada ni la nueva Edge Function desplegada en producción; primero deben validarse juntas en una rama aislada. Los intentos de invitación conservan su límite independiente de 10 por IP anonimizada y 5 por huella de código en 15 minutos.
+- El navegador genera el código de recuperación antes del registro y lo conserva temporalmente en `localStorage` hasta que la persona confirma que lo guardó; la contraseña nunca se almacena allí. PostgreSQL solo conserva el hash del código y la huella idempotente de la petición. Si la respuesta HTTP se pierde después del `COMMIT`, el mismo intento puede reanudarse tras volver a verificar la contraseña. Mientras el resultado sea incierto, la interfaz conserva el código, pero lo presenta como pendiente y no afirma que esté activo.
+- El código de recuperación puede regenerarse desde Configuración tras confirmar la contraseña actual y una sesión válida. La rotación invalida los códigos anteriores y guarda el nuevo hash en una transacción idempotente.
 - RLS activo y tablas privadas no accesibles directamente desde roles públicos; las operaciones de datos pasan por Edge Functions.
 - CORS abierto para el origen, sin cookies ni credenciales de navegador. CORS no sustituye autenticación.
 - Los borradores nuevos usan un hilo provisional privado sin destinatario; al enviar, el backend vincula la otra cuenta activa. Los borradores no se comparten con la segunda cuenta hasta el envío.
@@ -29,18 +33,31 @@
 
 ## Limitaciones explícitas
 
-- El registro público está disponible hasta completar las dos cuentas. Sin un código inicial o invitación, una persona que encuentre la URL podría ocupar una de las dos plazas. Comparte la URL solo con las personas previstas durante la creación de cuentas.
-- No hay recuperación por email. Si se pierde el código de recuperación, no existe restablecimiento automático.
+- La primera cuenta ya existente se considera autorizada y no necesita invitación para iniciar sesión. Los registros nuevos exigen un código válido. La invitación solo puede generarse por la primera cuenta activa cuando hay exactamente una cuenta ocupada; no se permite un alta pública sin código.
+- En una instalación completamente vacía, un operador con rol `postgres` debe generar la primera invitación desde Supabase SQL Editor. La función `bootstrap_app_registration_invite()` devuelve el código una sola vez y se niega a ejecutarse si ya existe una cuenta activa o pendiente.
+- La tabla `registration_invites` no guarda el código en claro. Si se pierde antes de utilizarse, revoca la invitación pendiente desde Configuración y genera otra. Si la persona ya lo utilizó, la invitación queda consumida y no puede reutilizarse. La invitación autoriza un registro; no sustituye al código de recuperación de una cuenta ya creada.
+- No hay recuperación por email. Si se pierde el código de recuperación y no existe una sesión activa desde la que regenerarlo, no hay un restablecimiento automático; por eso debe guardarse fuera del navegador.
 - No hay correo transaccional, CAPTCHA, segundo factor, notificaciones push ni cifrado de extremo a extremo.
-- `sessionStorage` mantiene el refresh token en el origen de la aplicación. Un XSS persistente podría comprometer la sesión; por eso se mantiene la CSP y la sanitización.
+- `sessionStorage` mantiene el refresh token y, durante una operación de registro/rotación, `localStorage` conserva el código de recuperación en claro junto con la clave idempotente y los datos mínimos para reintentar (nunca la contraseña). Un XSS persistente podría leer ambos; por eso se mantiene la CSP y la sanitización, y el handoff elimina el código al confirmarlo. El dato también se pierde si la persona borra el almacenamiento del sitio o cambia de navegador/dispositivo antes de guardarlo externamente.
+- La pantalla de entrega del código se restaura antes de cualquier comprobación remota de sesión. Mientras exista un código pendiente, se pausan la consulta de notificaciones, la sincronización de borradores y los eventos de ciclo de vida que pudieran reemplazar el contenido. Si otra pestaña revoca la sesión durante la entrega, el código permanece visible y, al confirmar que fue guardado, la aplicación pide iniciar sesión de nuevo en vez de reutilizar esa sesión.
 - La credencial privada inyectada por Supabase permite acceso de servicio; una vulnerabilidad de autorización en una Edge Function sería crítica.
 - PBKDF2 es una alternativa compatible con Web Crypto, no Argon2id.
-- No se han ejecutado pruebas de penetración ni una auditoría dinámica IDOR/XSS completa.
+- No se han ejecutado todavía pruebas dinámicas de dos cuentas contra un Supabase aislado, pgTAP ni Playwright; el paquete incluye los escenarios y la configuración para realizarlas. No se han ejecutado pruebas de penetración ni una auditoría dinámica XSS completa.
 
 ## Operación
 
-- No crees ni pegues secretos de aplicación en el repositorio, frontend, SQL Editor ni GitHub Pages.
+- No crees ni pegues secretos de aplicación en el repositorio, frontend ni GitHub Pages. El código de invitación sí se genera desde backend; solo el procedimiento de bootstrap administrativo se ejecuta en SQL Editor y su resultado debe compartirse por un canal privado.
 - No consultes ni copies la clave `SUPABASE_SECRET_KEYS`; Supabase la inyecta automáticamente en el runtime.
 - Guarda el código de recuperación fuera del sitio web y no lo compartas con terceros.
 - Revoca sesiones que no reconozcas y conserva respaldos de base de datos.
 - Ante una sospecha de compromiso, revoca las sesiones activas desde la base de datos y cambia las contraseñas afectadas.
+
+
+Consulta [`INVITATIONS.md`](INVITATIONS.md) para el procedimiento operativo de creación, entrega, revocación y bootstrap de invitaciones.
+
+
+## Privacidad entre sesiones y consistencia de cartas
+
+La caché de rutas privadas está segmentada por ID de cuenta. Al cambiar de identidad se invalidan precargas y datos de pantalla, se cierra el editor previo y se reinicia la identidad de los borradores locales. La interfaz y `letters-api` deduplican cartas por UUID antes de renderizar listas, inicio y conversaciones.
+
+La organización (favorito, archivo y papelera) es por participante; una carta puede figurar intencionalmente en Favoritos y en la bandeja principal si solo está marcada como favorita. Archivar la oculta de la bandeja principal de esa persona, y moverla a Papelera la oculta de las demás carpetas de esa persona. La purga del contenido de una carta enviada requiere confirmación de ambos participantes. Consulta [`LETTERS_CONSISTENCY.md`](LETTERS_CONSISTENCY.md) para los estados exactos y el procedimiento de pruebas.

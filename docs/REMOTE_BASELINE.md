@@ -1,12 +1,12 @@
 # Estado del proyecto Supabase
 
-Proyecto inspeccionado y actualizado el 17 de noviembre de 2026 mediante la conexión de administración Supabase.
+Proyecto inspeccionado y actualizado el 19 de noviembre de 2026 mediante la conexión de administración Supabase.
 
 ## Proyecto
 
 - Ref: `tiqbmuubpbmxqvtkcdhq`
 - URL: `https://tiqbmuubpbmxqvtkcdhq.supabase.co`
-- Nombre en Dashboard: `Book`
+- Nombre en Dashboard: `Nuestro Rincón`
 - Estado: `ACTIVE_HEALTHY`
 - PostgreSQL 17
 - Región: `us-west-2`
@@ -16,14 +16,14 @@ Proyecto inspeccionado y actualizado el 17 de noviembre de 2026 mediante la cone
 
 | Función | Estado | Versión | Verificación JWT del gateway |
 |---|---:|---:|---:|
-| `auth-api` | ACTIVE | 8 | false |
+| `auth-api` | ACTIVE | 11 | false |
 | `letters-api` | ACTIVE | 8 | false |
 
 Las dos funciones validan la sesión propia en el cuerpo del backend. `verify_jwt=false` no significa que las operaciones privadas queden sin autenticación. En `auth-api` v3 y `letters-api` v3 se corrigió el preflight CORS: `OPTIONS` devuelve `204` con cuerpo nulo. Las versiones anteriores intentaban responder `204` con el texto `ok`, lo que producía HTTP 500 y se manifestaba en el navegador como un error genérico de red.
 
 ## Migraciones remotas
 
-El historial remoto tiene 20 entradas. Las últimas registradas son:
+El historial remoto consultado tenía 23 entradas en la última inspección; los dos archivos SQL nuevos que incluye esta distribución aún no forman parte del historial remoto confirmado. Las últimas registradas son:
 
 - `20261116045159_lock_down_direct_data_api`
 - `20261116045242_self_service_accounts_and_email_recovery` (histórica; las rutas de email fueron sustituidas por registro sin email/código de recuperación)
@@ -37,6 +37,9 @@ El historial remoto tiene 20 entradas. Las últimas registradas son:
 - `20261117041103_idempotent_recovery_for_purged_drafts`
 - `20261117041205_reuse_account_slot_after_deletion`
 - `20261117051628_idempotent_draft_revision_conflicts`
+- `20261118203751_private_registration_invitations`
+- `20261118204339_registration_invitation_fk_indexes`
+- `20261119050910_idempotent_registration_recovery_handoff`
 
 Ocho migraciones anteriores establecen el dominio original de autenticación/correspondencia. El conector devolvió sus versiones/nombres e inventario de esquema, pero no expuso los ocho archivos SQL fuente completos. Este paquete no inventa esos archivos históricos.
 
@@ -44,9 +47,9 @@ Ocho migraciones anteriores establecen el dominio original de autenticación/cor
 
 Se verificó la existencia de `app_users`, `user_sessions`, `user_session_refresh_tokens`, `user_recovery_codes`, `letters`, `letter_threads`, `letter_user_state`, `notifications`, `user_profiles`, `user_settings` y tablas de soporte. RLS está activado en las tablas privadas; los roles públicos no acceden directamente a ellas. Las Edge Functions usan la credencial de servicio que Supabase inyecta automáticamente.
 
-Las migraciones remotas se verificaron mediante el historial de Supabase y consultas de catálogo. Añade `access_token_hash`, `access_expires_at` y el RPC `register_app_user_without_email`. Este RPC es invocable por `service_role`, crea cuentas activas sin email y limita el espacio a dos cuentas.
+Las migraciones históricas de sesiones y cuentas añadieron `access_token_hash`, `access_expires_at` y `register_app_user_without_email`. La ruta sin invitación era el mecanismo de alta anterior y quedó deshabilitada en la migración `20261118203751_private_registration_invitations`: su permiso de ejecución fue revocado también a `service_role`. El único alta vigente es `register_app_user_with_invite_idempotent`, que exige un token de invitación, una clave idempotente y el hash del código de recuperación; crea la cuenta, el perfil, las preferencias, el hash de recuperación, el recibo y consume la invitación dentro de la misma transacción. El RPC anterior `register_app_user_with_invite` quedó revocado también a `service_role`.
 
-Las funciones SQL relevantes comprobadas incluyen `register_app_user_without_email`, `start_app_login_attempt`, `complete_app_login_attempt`, `create_app_session_with_refresh`, `rotate_app_refresh_token`, `consume_app_recovery_code` y las operaciones de cartas/borradores/respuestas.
+Las funciones SQL relevantes comprobadas incluyen `register_app_user_with_invite_idempotent`, `rotate_app_recovery_code`, `check_app_registration_invite`, `create_app_registration_invite`, `revoke_app_registration_invite`, `start_app_registration_invite_attempt`, `complete_app_registration_invite_attempt`, `get_app_registration_invitation_status`, `start_app_login_attempt`, `complete_app_login_attempt`, `create_app_session_with_refresh`, `rotate_app_refresh_token`, `consume_app_recovery_code` y las operaciones de cartas/borradores/respuestas.
 
 ## Límites
 
@@ -92,9 +95,9 @@ La migración `20261117041103_idempotent_recovery_for_purged_drafts` se comprob�
 `20261117041205_reuse_account_slot_after_deletion` hace que una cuenta deshabilitada y anonimizada ya no cuente contra el límite de dos registros. La eliminación de cuenta borra los datos privados y sesiones, elimina los borradores personales activos y conserva las cartas ya enviadas para el otro participante. El registro mínimo del usuario se conserva deshabilitado/anonimizado por integridad referencial. Una prueba reversible de borrado con cuenta temporal verificó que desaparecen borradores, sesiones, perfil y preferencias; la prueba de extremo a extremo de enviar una carta compartida y luego eliminar su remitente no se pudo completar durante esta revisión, por lo que esa combinación no se declara validada dinámicamente.
 
 
-## Estado remoto vigente después de esta revisión (17 de noviembre de 2026)
+## Estado remoto anterior a las invitaciones (17 de noviembre de 2026)
 
-El inventario remoto confirmó `auth-api` v8 y `letters-api` v8 en estado `ACTIVE`, con 20 migraciones aplicadas. `auth-api` v8 incluye `sessionId` en creación, renovación y consulta de sesión para la detección de revocación. La interfaz verifica la sesión actual cada 10 segundos cuando la pestaña está visible y en línea; entre pestañas del mismo navegador el evento de revocación se comunica de inmediato con `BroadcastChannel`.
+El inventario remoto de esa fecha confirmó `auth-api` v8 y `letters-api` v8 en estado `ACTIVE`, con 20 migraciones aplicadas. `auth-api` v8 incluye `sessionId` en creación, renovación y consulta de sesión para la detección de revocación. La interfaz verifica la sesión actual cada 10 segundos cuando la pestaña está visible y en línea; entre pestañas del mismo navegador el evento de revocación se comunica de inmediato con `BroadcastChannel`.
 
 La recuperación de borradores se comprobó en una transacción reversible usando una clave de creación real que pertenecía a una carta purgada. `create_letter_draft` derivó un identificador sustituto y devolvió un borrador activo; la transacción se revirtió para no dejar datos de prueba. La eliminación de cuenta se comprobó para el borrado de borradores privados, sesiones, preferencias y perfil de una cuenta temporal. La combinación de envío de una carta compartida y eliminación posterior de su remitente no se pudo completar como prueba dinámica en esta revisión; la lógica de preservación se revisó en el SQL y el trigger de inmutabilidad permite la vinculación inicial de destinatario una sola vez.
 
@@ -103,11 +106,116 @@ La recuperación de borradores se comprobó en una transacción reversible usand
 
 La migración `20261117051628_idempotent_draft_revision_conflicts` cambia `save_letter_draft` para comparar primero el contenido recibido con el contenido persistido. Si ambos coinciden, un reintento responde `saved` con la revisión vigente, aunque el cliente conserve una revisión anterior. Si el contenido sí difiere y la revisión quedó obsoleta, mantiene el control de conflicto y devuelve el borrador remoto. El RPC continúa reservado a `service_role`; las comprobaciones de privilegios confirmaron que `anon` y `authenticated` no tienen permiso de ejecución. Una prueba transaccional con el borrador activo y una revisión obsoleta, pero contenido idéntico, respondió correctamente y se revirtió sin modificar datos.
 
-`letters-api` v8 no restaura borradores al ejecutar guardados automáticos ni permite enviar un borrador cuyo estado personal esté en Papelera. La única salida de Papelera es la acción explícita `restore`. El frontend serializa la sincronización de borradores en un único carril por cuenta, marca el ID como descartado antes de esperar tareas pendientes, espera la cola y mueve la carta a Papelera; luego elimina las copias locales y actualiza la lista/caché inmediatamente, mientras refresca los datos en segundo plano. Descartar desde Borradores no pide una segunda confirmación.
+`letters-api` v8 no restaura borradores al ejecutar guardados automáticos ni permite enviar un borrador cuyo estado personal esté en Papelera. La única salida de Papelera es la acción explícita `restore`. En la versión local v14 el descarte aguardaba la cola de borradores; la versión local v15 sustituye esa espera por una retirada optimista inmediata y deja que PostgreSQL serialice el guardado y el descarte bloqueando la carta y el estado personal en el mismo orden. Una escritura tardía recibe `discarded`; no puede modificar ni sacar de Papelera el borrador. `letters-api` también rechaza la creación de un borrador nuevo cuyo cuerpo esté vacío. Descartar desde Borradores no pide una segunda confirmación.
 
-Las pruebas automatizadas incluyen regresiones para descarte de un solo clic, espera de la cola de sincronización, no restauración automática desde Papelera, guardados repetidos con contenido idéntico y renovación simultánea de sesión. Un único refresh token no se rota en paralelo por varios `401`; las peticiones antiguas vuelven a intentar con el token vigente y una renovación pendiente no puede reactivar una sesión cerrada. El backend remoto y la migración quedaron activos; al publicar la aplicación solo se requiere sustituir el frontend estático.
+Las pruebas automatizadas incluyen regresiones para descarte de un solo clic, protección contra el autoguardado tardío en Papelera, no restauración automática desde Papelera, guardados repetidos con contenido idéntico y renovación simultánea de sesión. Un único refresh token no se rota en paralelo por varios `401`; las peticiones antiguas vuelven a intentar con el token vigente y una renovación pendiente no puede reactivar una sesión cerrada. El backend remoto y la migración quedaron activos; al publicar la aplicación solo se requiere sustituir el frontend estático.
 
 
 ## Incidencia de renovación simultánea de sesión
 
 Los registros de auditoría remotos mostraron varias entradas `session.refresh_reuse_detected` para una misma sesión con diferencias de milisegundos (por ejemplo, el 17 de noviembre de 2026 a las 04:56:16 UTC y 05:12:14 UTC). Esto concuerda con varias peticiones que intentaron rotar el mismo refresh token; el RPC de seguridad detectó el replay y revocó la sesión. El frontend centraliza ahora `refreshSession()` en `SessionService`: las peticiones concurrentes esperan la misma promesa de renovación, `checkCurrentSession()` utiliza ese mismo camino, y una petición que recibe tarde un `401` vuelve a intentar con el access token ya renovado en vez de rotar de nuevo el refresh token antiguo. Las escrituras no se reintentan por fallos de transporte/timeout/5xx; el único reintento de escritura permitido es ante `401` luego de renovar sesión, porque el backend rechaza esa petición antes de ejecutar la operación. Un contador de generación impide que una respuesta tardía restaure la sesión después de un cierre de sesión o un nuevo inicio. Esta protección se verifica con pruebas de concurrencia y no debilita la detección de reutilización en el backend.
+
+
+## Primera implementación del registro mediante invitaciones privadas (18 de noviembre de 2026; estado histórico)
+
+La primera etapa aplicó `20261118203751_private_registration_invitations` y posteriormente `20261118204339_registration_invitation_fk_indexes`. En ese momento el historial remoto quedó en **22 migraciones** y `auth-api` pasó a **v9 ACTIVE**; `letters-api` permanece en **v8 ACTIVE**.
+
+La migración crea `registration_invites` y `registration_invite_attempts`, ambas con RLS habilitado y permisos de tabla reservados a `service_role`. Se comprobó que `anon` y `authenticated` no tienen permiso `SELECT` sobre ninguna de ellas. Las RPC nuevas son `SECURITY INVOKER` y solo `service_role` puede ejecutarlas; el procedimiento `bootstrap_app_registration_invite()` queda autorizado exclusivamente al rol PostgreSQL `postgres`. Las rutas históricas `register_app_user_without_email`, `register_app_user`, `accept_app_invitation` y `create_app_invitation` fueron revocadas también a `service_role`.
+
+La invitación se genera con 32 bytes aleatorios, se representa como `NR1-` más ocho grupos hexadecimales, vence a los siete días y solo se muestra en la respuesta de creación. La base de datos guarda el hash SHA-256 con separación de dominio, nunca el código en claro. `register_app_user_with_invite` valida el token bajo `SELECT ... FOR UPDATE` y consume la invitación en la misma transacción que la creación de usuario, perfil, preferencias y código de recuperación. El rate limit usa huellas HMAC de IP y hash de código: 10 intentos por IP y 5 por código en 15 minutos.
+
+El conteo remoto consultado después de la migración conserva **una cuenta activa y una fila total**. No se generó una invitación real ni se creó una segunda cuenta durante la implementación. La primera cuenta podrá generar la invitación desde **Configuración → Invitación privada**, una vez que el frontend actualizado se publique en GitHub Pages. No se debe ejecutar el procedimiento de bootstrap en este proyecto existente; es solo para una base nueva sin cuentas.
+
+La validación remota comprobó la versión activa de `auth-api`, el registro de ambas migraciones, los permisos de tablas y RPC, y que las rutas antiguas ya no son ejecutables. No se declara una prueba end-to-end de registro con una segunda cuenta real, para no consumir una invitación ni alterar los datos de producción.
+
+
+## Entrega recuperable del código de recuperación (19 de noviembre de 2026)
+
+Se aplicó la migración `20261119050910_idempotent_registration_recovery_handoff`; el historial remoto quedó en **23 migraciones** y `auth-api` pasó a **v10 ACTIVE**. La actualización posterior de `auth-api` a **v11 ACTIVE** no requirió otra migración: endureció el límite de intentos en la ruta de reanudación idempotente. `letters-api` permanece en **v8 ACTIVE**.
+
+El navegador genera el código de recuperación antes de enviar el alta y conserva temporalmente el código, la clave idempotente y los datos mínimos del intento en `localStorage`. No almacena la contraseña. El uso de `localStorage` permite recuperar el código después de recargar o cerrar accidentalmente la pestaña/navegador; no permite recuperarlo si se borra el almacenamiento del sitio o se cambia a otro navegador/dispositivo antes de guardarlo externamente. El código pendiente se elimina cuando la persona confirma que lo guardó.
+
+`register_app_user_with_invite_idempotent` valida una clave de petición, el hash de la invitación, el nombre de usuario y el hash del código; bajo bloqueos transaccionales crea cuenta, perfil, preferencias, código y recibo, y consume la invitación en la misma transacción. El recibo permite reanudar un alta confirmada aunque se haya perdido la respuesta HTTP. El backend vuelve a verificar la contraseña antes de crear una nueva sesión; la clave idempotente no es un mecanismo para iniciar sesión por sí sola.
+
+`auth-api` v10 separa el resultado de creación de cuenta del resultado de autenticación. Si el alta se confirmó y fallan la lectura posterior del usuario o la creación de sesión, responde `accountCreated: true` y `authenticated: false`; el frontend conserva el código y permite iniciar sesión o repetir la misma petición con la misma clave idempotente. Los errores definitivos se distinguen de los fallos de red/5xx para no mostrar un código que nunca fue activado.
+
+La acción `recovery-code:rotate` permite regenerar un código desde Configuración después de verificar la contraseña actual y la sesión vigente. La transacción invalida todos los códigos anteriores, inserta el nuevo hash y deja un recibo idempotente para que un reintento devuelva el mismo resultado. El nuevo código se conserva localmente hasta que la persona confirme que lo guardó.
+
+La verificación remota confirmó que ambas tablas nuevas (`registration_request_receipts` y `recovery_code_rotation_receipts`) tienen RLS habilitado, no otorgan acceso a `anon` ni `authenticated` y reservan privilegios a `service_role`. Las RPC nuevas son `SECURITY INVOKER`, solo `service_role` puede ejecutarlas y el RPC de alta anterior quedó revocado. El inventario remoto continúa con **una cuenta activa y una invitación pendiente**; no se consumió la invitación ni se creó una segunda cuenta durante esta modificación.
+
+La suite automatizada local incorpora pruebas de reintento tras `503`, respuesta de alta confirmada sin sesión y clasificación de errores definitivos. No se ejecutó un registro end-to-end con una segunda cuenta real para no consumir la invitación de producción.
+
+
+### Endurecimiento del reintento y estado del código (19 de noviembre de 2026)
+
+`auth-api` v11 mueve la consulta del recibo idempotente detrás del limitador de intentos por huella de IP y código. Así, una persona no puede usar la ruta de reanudación para probar contraseñas sin que esos intentos cuenten contra los límites de 10 por IP y 5 por código en 15 minutos. Los intentos de reanudación se completan en auditoría como aceptados o rechazados.
+
+La interfaz distingue ahora un código confirmado de un código pendiente de confirmación. Si el resultado HTTP es incierto, muestra el código conservado localmente, pero no afirma que ya esté activo; pide reintentar la misma operación. Si se produce un conflicto de contraseña al reanudar, tampoco afirma que el código siga vigente: indica que debe iniciarse sesión con la contraseña actual y, de ser necesario, regenerarlo desde Configuración → Código de recuperación.
+
+Se volvió a consultar el proyecto remoto: `auth-api` está `ACTIVE` en v11; `letters-api` continúa `ACTIVE` en v8; el historial conserva 23 migraciones. Las tablas de recibos mantienen RLS, sin permisos de tabla para `anon` ni `authenticated`, y las RPC nuevas siguen reservadas a `service_role`. No se generó ni consumió otra invitación; la cuenta existente y la invitación pendiente permanecen sin cambios.
+
+
+## Revisión de seguridad y reconstrucción (19 de noviembre de 2026)
+
+La lectura directa del proyecto remoto volvió a confirmar 23 migraciones en historial, `auth-api` v11 ACTIVE y `letters-api` v8 ACTIVE. No se aplicó la migración de rate limiting de esta entrega ni se desplegó código a producción.
+
+El ZIP recibido tenía 18 archivos SQL antes de esta propuesta. De ellos, 15 coinciden con migraciones del historial remoto, faltan las ocho primeras migraciones remotas y hay tres archivos locales heredados/no canónicos (`20261116000000_lock_down_direct_data_api`, `20261116001000_first_account_bootstrap` y `20261116002000_self_service_accounts_and_email_recovery`). Esta entrega añade una nueva migración propuesta `20261119064344_auth_attempt_rate_limits.sql`, que **no** forma parte de las 23 migraciones aplicadas.
+
+`supabase/schema/` no contenía un dump. Se añaden instrucciones en `docs/DB_REBUILD.md`, pero no se afirma que el esquema haya quedado reconstruido desde cero: para obtener el dump oficial es necesario ejecutar Supabase CLI v3 contra el proyecto remoto o una rama de desarrollo. No inventar ni renumerar las ocho migraciones históricas ausentes.
+
+La nueva prueba `supabase/tests/auth_rate_limits.test.sql` y la prueba HTTP `tests/integration/two-account-security.test.mjs` se añadieron al repositorio, pero no se ejecutaron contra PostgreSQL ni contra dos cuentas reales en un proyecto aislado. No hay una branch de desarrollo creada. `auth-api` sigue v11 y `letters-api` sigue v8 en producción.
+
+
+### Continuación local: pantalla de recuperación y protección de intentos (19 de noviembre de 2026)
+
+La versión de trabajo de este paquete refuerza el traspaso del código: al arrancar, la aplicación detecta y muestra el handoff persistido antes de intentar restaurar la sesión. Se detienen las actualizaciones periódicas de notificaciones y sincronización mientras el código esté visible; el código puede copiarse mediante Clipboard API o una selección manual compatible con navegadores móviles. La confirmación de guardado requiere una acción explícita. Si otra pestaña revoca la sesión durante ese intervalo, la pantalla del código no se sustituye; después de confirmarlo, se limpia la sesión revocada y se solicita un nuevo inicio de sesión. Estas modificaciones son locales al ZIP y todavía no se han publicado en GitHub Pages.
+
+Se añade la migración propuesta `20261119064344_auth_attempt_rate_limits.sql`: limita por combinación cuenta+IP y por IP, con enfriamiento progresivo; los intentos distribuidos contra un nombre de usuario se auditan y, desde el décimo fallo, activan fricción progresiva solo en respuestas fallidas (100 ms a un máximo de 1,6 s). Una contraseña correcta no se ralentiza ni se bloquea la cuenta globalmente. El identificador y la dirección IP se almacenan como HMAC. `auth-api` del paquete llama a la RPC nueva `start_app_auth_attempt`; por tanto, la migración y esa Edge Function deben desplegarse juntas en la branch de pruebas. No se debe desplegar esta versión de la función en producción antes de aplicar y validar la migración en un entorno aislado.
+
+La suite local final de esta entrega contiene **94 pruebas**; `npm run check`, `npm run build:pages` y la comprobación TypeScript de `auth-api`, `letters-api` y el módulo compartido pasan. La prueba HTTP de dos cuentas se ha empaquetado, pero se omite de forma segura si no recibe las variables del entorno aislado. pgTAP exige `NR_TEST_CONFIRM_ISOLATED=YES`, un project ref distinto de producción y una URL PostgreSQL cuyo host coincida exactamente. Ni pgTAP ni la prueba HTTP se han ejecutado contra una branch remota real; tampoco se ejecutó Playwright en navegador real en este entorno.
+
+
+## Mejoras locales de consistencia de cartas (19 de noviembre de 2026)
+
+El paquete local incorpora la migración pendiente `20261119090000_shared_letter_purge_and_reply_guard.sql`. Ajusta `guard_letter_participants_and_immutability` para permitir purgar una respuesta ya existente aunque su carta padre tenga `status = 'purged'`, sin permitir crear una respuesta nueva sobre un padre purgado ni modificar la identidad/hilo. También hace idempotente la confirmación de purga compartida y diferencia una primera confirmación de una repetición. La prueba `supabase/tests/shared_letter_purge.test.sql` contiene once aserciones para validar el flujo de confirmación, purga de respuestas y rechazo de un autoguardado sobre un borrador en Papelera, dentro de una transacción reversible; está incorporada al ejecutor pgTAP, pero no se ha ejecutado contra un proyecto aislado en esta entrega.
+
+La interfaz y `letters-api` incluyen deduplicación por UUID en listas y conversaciones, caché de lista acotada por cuenta, limpieza completa del estado privado al cambiar de sesión, apertura inmediata a partir del resumen de tarjeta y marcado de lectura en segundo plano. La actualización v15 reutiliza el hilo ya cargado para cambiar entre cartas sin reconstruir el shell ni consultar otra vez el detalle de la misma conversación; usa actualizaciones optimistas con reversión para favorito, archivo, descarte, restauración y eliminación; y no crea borradores vacíos al entrar al editor. La misma migración pendiente hace que `save_letter_draft` compruebe y bloquee el estado de Papelera para impedir una reaparición por autoguardado tardío. Estos cambios están en el paquete local: la migración no está aplicada en producción y `letters-api` continúa en versión remota 8 hasta ejecutar la validación y despliegue.
+
+
+## Actualización local: purga tras eliminación de cuenta, tipado y paginación (20 de noviembre de 2026)
+
+Una consulta de solo lectura del proyecto remoto encontró una cuenta activa, una cuenta deshabilitada y tres cartas compartidas en `sent` que estaban en Papelera con confirmación registrada por la cuenta activa. El participante deshabilitado ya no conserva su `letter_user_state`, por lo que la función remota anterior (`confirm_letter_permanent_deletion`) exigía una confirmación que no podía llegar. Este diagnóstico coincide con el aviso que muestra la interfaz.
+
+El nuevo archivo local `20261120173200_fix_orphaned_purge_and_list_pagination.sql` cambia la condición: solo cuentan participantes cuyo `app_users.status = 'active'`. Al pasar una cuenta de `active` a `disabled`, un trigger vuelve a evaluar sus cartas. Si cada cuenta que sigue activa ya confirmó su eliminación, el contenido se purga; si queda otra cuenta activa sin confirmar, la carta se conserva para ella. La migración incluye un barrido que purgaría las tres cartas huérfanas observadas porque la cuenta activa ya había confirmado. **Este comportamiento aún no se ha aplicado a producción**: hasta aplicar y verificar la migración, el proyecto remoto conserva la función antigua y el aviso puede repetirse.
+
+La misma migración propone `list_user_letters`, una consulta del lado de PostgreSQL con filtro por carpeta, búsqueda de texto, total, no leídas, offset/limit y orden determinista por fecha e ID. `letters-api` utiliza esa RPC para evitar buscar solo dentro de los primeros 100 registros. Hilos y notificaciones usan rangos REST de PostgreSQL con `Range` y `Prefer: count=exact`; el frontend carga páginas progresivamente al desplazarse y conserva un botón accesible como alternativa. Se añaden índices compuestos para los órdenes de carpeta, hilo y notificaciones.
+
+El código TypeScript define contratos explícitos y validadores en tiempo de ejecución para las respuestas de creación de borrador y listado paginado. El workflow de Pages instala Deno y ejecuta `npm run check:edge` (`deno check`) antes de las pruebas, la compilación y el despliegue; un error de tipos detendrá ese job antes de publicar. El entorno local de esta entrega no tiene Deno instalado, por lo que no se declara una ejecución local de `deno check`; se ejecuta una comprobación equivalente con `tsc` sobre los módulos Edge y GitHub Actions repetirá la verificación nativa de Deno.
+
+La arquitectura E2EE se documenta en `docs/E2EE_ARCHITECTURE.md`. No se implementa criptografía parcial ni se cambia el almacenamiento de las cartas en esta versión: el contenido sigue en claro y el documento describe las claves, sobres, respaldo, recuperación, límites de búsqueda y migración histórica que deben resolverse antes de activar E2EE.
+
+El paquete local contiene 22 SQL: 15 que coinciden con entradas remotas, tres archivos heredados/no canónicos y cuatro migraciones propuestas pendientes (`20261119064344`, `20261119090000`, `20261120173200`, `20261120235900`). En el último inventario consultado, producción sigue con 23 migraciones, `auth-api` v11 ACTIVE y `letters-api` v8 ACTIVE. No se aplicó SQL, no se desplegaron Edge Functions y no se modificaron cuentas ni invitaciones. La prueba pgTAP se amplió a 14 aserciones, incluida la transición de una cuenta a `disabled`, pero todavía requiere ejecución en una branch aislada.
+
+
+## Modularización de controladores y perfil transaccional (20 de noviembre de 2026)
+
+La distribución de frontend separa el controlador original en `AppController` (coordinación), `AuthController`, `NavigationController`, `LetterController`, `DraftController`, `SettingsController` y `NotificationController`. El coordinador conserva la inicialización y la delegación de eventos compartidos; los módulos especializados aportan métodos al mismo contexto de aplicación mediante descriptores de prototipo, de modo que comparten estado sin introducir una segunda instancia ni duplicar cachés. La cola de sincronización de borradores se aisló en `DraftSyncQueue`.
+
+Los sondeos periódicos se gestionan con `AdaptivePoller`: suspende temporizadores cuando la pestaña está oculta o no hay conexión, se despierta al volver a la pestaña o recuperar conectividad, usa intervalos activos/inactivos y aplica backoff exponencial al fallar. La sesión pasa a 5 minutos activa y 15 minutos inactiva; las notificaciones a 2 y 10 minutos respectivamente. No se activó Supabase Realtime: la aplicación usa sesiones opacas propias y esta entrega prioriza el polling adaptativo y controlable sin introducir un canal Realtime que no forme parte de la autenticación actual.
+
+El flujo `profile:rename` usa ahora un único RPC `rename_app_profile`, que actualiza `app_users` y realiza `INSERT ... ON CONFLICT ... DO UPDATE` en `user_profiles` dentro de una sola transacción PostgreSQL. El RPC está reservado a `service_role`; la Edge Function deriva `p_user_id` de la sesión validada, no del cuerpo enviado por el navegador. Se comprobó en el esquema remoto que `user_profiles.user_id` es su clave primaria y que el perfil restringe la longitud del nombre visible a 80 caracteres.
+
+La migración local `20261120235900_transactional_profile_rename.sql` **no se ha aplicado a producción**. El último baseline remoto confirmado permanece en 23 migraciones, `auth-api` v11 y `letters-api` v8; esta entrega solo modifica el paquete local. El archivo SQL local suma una cuarta migración propuesta pendiente.
+
+
+## Accesibilidad y distribución de código fuente (21 de noviembre de 2026)
+
+La capa principal `#app` ya no es una región `aria-live`: las actualizaciones de vistas no deben anunciar de forma masiva su contenido. Las confirmaciones y los errores usan dos regiones pequeñas y estables (`status`/`alert`). La navegación autenticada añade enlace para saltar al contenido, nombre de navegación, ruta activa y encabezado enfocable; el menú móvil alterna `inert` y `aria-hidden` para que el panel cerrado no reciba foco. Los diálogos de vista previa retienen el foco, cierran con Escape y lo devuelven al disparador. Los campos del editor y los formularios tienen nombres y tipos de botón explícitos.
+
+Se documentó una matriz de validación de teclado y lectores de pantalla en `docs/ACCESSIBILITY.md`. La comprobación automática cubre el contrato HTML/CSS y la gestión del foco simulada, pero en esta entrega no se ejecutaron NVDA, VoiceOver ni TalkBack; la conformidad WCAG no se declara certificada.
+
+El README y este baseline identifican `auth-api` v11 y `letters-api` v8 para la última inspección remota conocida. En el paquete v17 recibido no se encontraron referencias de README a `auth-api` v10; esta entrega añade una comprobación automatizada para evitar que reaparezca esa discrepancia.
+
+El ZIP v17 de partida ya no contenía la carpeta `.git/`; por tanto, el historial de commits no estaba disponible para inspeccionarlo desde ese archivo. El nuevo `scripts/package-zip.mjs` excluye `.git/`, `node_modules/`, `.env` y artefactos de build/pruebas al generar futuras distribuciones. Esto no equivale a una auditoría del historial del repositorio GitHub: para revisar commits antiguos por secretos se necesita escanear el repositorio remoto o un clon íntegro con herramientas como un detector de secretos. No se modificó ni se reescribió el historial.
+
+Las notificaciones push externas se mantienen fuera del alcance de esta entrega. `docs/PUSH_NOTIFICATIONS_ROADMAP.md` describe un diseño futuro compatible con las sesiones opacas propias, con consentimiento explícito, claves VAPID privadas solo en backend, payloads sin contenido de cartas y revocación por dispositivo.

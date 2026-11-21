@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
+import { readControllerSource } from './helpers/controller-source.mjs';
 
 test('la app no invoca Supabase Auth', async () => {
   const files = [
@@ -56,7 +57,7 @@ test('el backend habilita CORS sin cookies y exige sesión propia para datos pri
 
 
 test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const view = await read('../assets/js/views/app-view.js');
   assert.match(controller, /async downloadHtml\(letterId\)/);
   assert.match(controller, /text\/html;charset=utf-8/);
@@ -68,8 +69,9 @@ test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () 
 test('la instantánea del esquema se obtiene del historial real y no de un esquema supuesto', async () => {
   const schemaReadme = await read('../supabase/schema/README.md');
   const projectReadme = await read('../README.md');
-  assert.match(schemaReadme, /supabase db dump --linked/);
-  assert.match(projectReadme, /20 migraciones/);
+  assert.match(schemaReadme, /supabase db dump --remote/);
+  assert.doesNotMatch(schemaReadme, /supabase db dump --linked/);
+  assert.match(projectReadme, /23 migraciones/);
 });
 
 
@@ -88,7 +90,7 @@ test('la raíz del repositorio contiene la entrada web y Pages construye solo el
 
 test('el registro no requiere correo ni secretos de instalación', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const session = await read('../assets/js/services/session-service.js');
   const api = await read('../assets/js/services/api-client.js');
   const auth = await read('../supabase/functions/auth-api/index.ts');
@@ -102,7 +104,9 @@ test('el registro no requiere correo ni secretos de instalación', async () => {
   assert.match(session, /async register\(account\)/);
   assert.match(api, /'register'/);
   assert.match(auth, /action === 'register'/);
-  assert.match(auth, /register_app_user_without_email/);
+  assert.match(registerMarkup, /name="invitationCode"/);
+  assert.match(auth, /register_app_user_with_invite/);
+  assert.doesNotMatch(auth, /register_app_user_without_email/);
   assert.match(auth, /recoveryCode/);
 });
 
@@ -148,18 +152,19 @@ test('form-error dispone de separación y desaparece cuando no contiene texto', 
 
 
 test('la navegación precarga secciones y reutiliza una caché breve para evitar esperas repetidas', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /routeCacheTtl = 60000/);
   assert.match(controller, /pointerover/);
   assert.match(controller, /pointerdown/);
   assert.match(controller, /prefetchRoute\(target\.dataset\.route\)/);
-  assert.match(controller, /Date\.now\(\) - cached\.at > this\.routeCacheTtl/);
+  assert.match(controller, /Date\.now\(\) - cached\.at <= this\.routeCacheTtl/);
+  assert.match(controller, /const accountId = this\.session\?\.user\?\.id \|\| 'guest'/);
   assert.match(controller, /No retrasar el cambio de sección esperando IndexedDB/);
 });
 
 test('las preferencias guardan el tema claro, oscuro o del sistema por usuario', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const api = await read('../supabase/functions/letters-api/index.ts');
   const css = await read('../assets/css/app.css');
   assert.match(view, /id="settings-theme" name="theme"/);
@@ -174,7 +179,7 @@ test('las preferencias guardan el tema claro, oscuro o del sistema por usuario',
 
 test('la navegación muestra carga ligera y ofrece recuperación cuando una sección falla', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(view, /route-skeleton/);
   assert.doesNotMatch(view, /Abriendo esta sección/);
   assert.match(view, /data-action="retry-route"/);
@@ -194,7 +199,7 @@ test('las lecturas tienen tiempo máximo y reintento acotado sin repetir escritu
 
 test('Archivo, Borradores y Papelera tienen acciones y mensajes propios', async () => {
   const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(view, /folder-\$\{state\.route\}/);
   assert.match(view, /archive: \['⌑'/);
   assert.match(view, /drafts: \['✎'/);
@@ -246,7 +251,7 @@ test('el tema se aplica antes de los estilos y cubre login, registro y recuperac
   const boot = await read('../assets/js/theme-boot.js');
   const html = await read('../index.html');
   const css = await read('../assets/css/app.css');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(html, /assets\/js\/theme-boot\.js/);
   assert.match(boot, /nuestro-rincon:theme:last/);
   assert.match(boot, /prefers-color-scheme: dark/);
@@ -285,7 +290,7 @@ test('el perfil permite editar nombre, usuario Unicode, email de contacto y cont
 
 test('el tema sistema es el predeterminado tanto en preferencias como en la API', async () => {
   const state = await read('../assets/js/models/app-state.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const letters = await read('../supabase/functions/letters-api/index.ts');
   const migration = await read('../supabase/migrations/20261117025358_unicode_usernames_and_system_theme.sql');
   assert.match(state, /theme: 'system'/);
@@ -296,7 +301,7 @@ test('el tema sistema es el predeterminado tanto en preferencias como en la API'
 });
 
 test('las secciones visitadas mantienen su contenido y no vuelven a mostrar skeleton', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /this\.seenRoutes\.has\(route\)/);
   assert.match(controller, /this\.state\.routeLoading = !hasVisited/);
   assert.match(controller, /Conserva los datos para que la navegación siga siendo inmediata/);
@@ -317,7 +322,15 @@ test('el nombre de usuario admite Unicode y símbolos permitidos sin aceptar esp
 test('el perfil se sincroniza en las dos tablas y el cambio de contraseña es transaccional', async () => {
   const letters = await read('../supabase/functions/letters-api/index.ts');
   const passwordMigration = await read('../supabase/migrations/20261117030115_secure_profile_and_password_updates.sql');
-  assert.match(letters, /patchRows\('app_users'[\s\S]*patchRows\('user_profiles'/);
+  const profileMigration = await read('../supabase/migrations/20261120235900_transactional_profile_rename.sql');
+  const renameStart = letters.indexOf("case 'profile:rename':");
+  const renameEnd = letters.indexOf("case 'sessions':", renameStart);
+  const renameAction = letters.slice(renameStart, renameEnd);
+  assert.match(renameAction, /rpc<unknown>\('rename_app_profile'/);
+  assert.doesNotMatch(renameAction, /Promise\.all|patchRows/);
+  assert.match(profileMigration, /update public\.app_users[\s\S]*insert into public\.user_profiles[\s\S]*on conflict \(user_id\) do update/);
+  assert.match(profileMigration, /revoke execute[\s\S]*from public, anon, authenticated/i);
+  assert.match(profileMigration, /grant execute[\s\S]*to service_role/i);
   assert.match(passwordMigration, /update public\.app_users[\s\S]*update public\.user_session_refresh_tokens[\s\S]*update public\.user_sessions/);
   assert.match(passwordMigration, /and s\.id <> p_current_session_id/);
   assert.match(passwordMigration, /account\.password_changed/);

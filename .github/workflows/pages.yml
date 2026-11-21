@@ -30,8 +30,16 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Verify project structure and JavaScript
         run: npm run check
+
+      - name: Type-check Supabase Edge Functions
+        run: npm run check:edge
 
       - name: Run automated tests
         run: npm test
