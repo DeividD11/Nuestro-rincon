@@ -8,7 +8,6 @@ const pinned = {
   'actions/setup-node': '949feb2413d6458794dcd2491c4babbbce0c15c1',
   'denoland/setup-deno': '22d081ff2d3a40755e97629de92e3bcbfa7cf2ed',
   'actions/upload-artifact': 'b7c566a772e6b6bfb58ed0dc250532a479d7789f',
-  'actions/download-artifact': '018cc2cf5baa6db3ef3c5f8a56943fffe632ef53',
   'actions/configure-pages': '45bfe0192ca1faeb007ade9deae92b16b8254a0d',
   'actions/upload-pages-artifact': '7b1f4a764d45c48632c6b24a0339c27f5614fb0b',
   'actions/deploy-pages': 'f33f41b675f0ab2dc5a6863c9a170fe83af3571e',

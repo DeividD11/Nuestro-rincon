@@ -28,7 +28,12 @@ test('Deno check es un gate de PR y deploy consume el artefacto ya verificado', 
   assert.match(workflow, /run: npm run check:edge/);
   assert.match(workflow, /verify:[\s\S]*?deploy:[\s\S]*?needs: verify/);
   assert.match(workflow, /actions\/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f/);
-  assert.match(workflow, /actions\/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53/);
+  assert.match(workflow, /actions\/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b/);
+  assert.ok(workflow.indexOf('Run axe-core WCAG 2.2 AA checks') < workflow.indexOf('Upload verified site for GitHub Pages'));
+  assert.ok(workflow.indexOf('Upload verified site for GitHub Pages') < workflow.indexOf('  deploy:'));
+  assert.match(workflow, /deploy:[\s\S]*?needs: verify/);
+  const deployJob = workflow.slice(workflow.indexOf('  deploy:'));
+  assert.doesNotMatch(deployJob, /actions\/(?:download-artifact|upload-pages-artifact)@/);
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'[\s\S]*?github\.event_name != 'pull_request'/);
   assert.match(workflow, /actions\/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e/);
 });

@@ -78,13 +78,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload verified site artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      # El artefacto de Pages se publica desde el job de verificación. Así,
+      # deploy-pages lo consulta en un job posterior y no inmediatamente
+      # después de crearlo en el mismo runner (ventana de propagación de API).
+      - name: Upload verified site for GitHub Pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
-          name: pages-site
           path: ./_site
-          if-no-files-found: error
-          retention-days: 2
+          retention-days: 1
 
   deploy:
     name: Deploy GitHub Pages
@@ -99,19 +101,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Download verified site artifact
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: pages-site
-          path: ./_site
-
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
-      - name: Upload static site
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
-        with:
-          path: ./_site
 
       - name: Deploy
         id: deployment

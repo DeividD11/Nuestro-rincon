@@ -12,7 +12,7 @@ El workflow `.github/workflows/pages.yml` ejecuta `pull_request` y `push` hacia 
 6. `npm run build:pages` genera `_site/`.
 7. `npm run test:a11y` ejecuta axe-core y las pruebas geométricas/de teclado del editor en Chromium.
 
-La publicación solo consume el artefacto producido por `verify`; el job de despliegue no vuelve a compilar un árbol diferente. Una pull request nunca publica Pages.
+El job `verify` genera `_site/` y, únicamente para una publicación desde `main`, crea allí mismo el artefacto oficial `github-pages` mediante `actions/upload-pages-artifact`. El job `deploy` depende de `verify` (`needs: verify`) y solo ejecuta `actions/deploy-pages`; no vuelve a descargar, empaquetar ni subir el sitio. Esta separación deja que termine la carga del artefacto y que finalice el job de verificación antes de que el job de despliegue consulte sus metadatos, evitando una consulta inmediata de lectura tras escritura. Una pull request nunca publica Pages.
 
 ## Protección recomendada de `main`
 

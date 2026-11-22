@@ -334,9 +334,9 @@ El workflow `.github/workflows/pages.yml` separa verificación y despliegue. `.n
 5. `npm run check:edge` ejecuta `deno check` sobre `core.ts`, `auth-api` y `letters-api` con Deno 2.9.8.
 6. `npm test` ejecuta pruebas unitarias/contrato; `npm run test:coverage` calcula cobertura real de `assets/js`, aplica mínimos iniciales de 25 % de líneas, 35 % de funciones y 55 % de ramas, y genera `coverage/lcov.info`.
 7. `npm run build:pages` y `npm run test:a11y` (axe-core/WCAG 2.2 A/AA en Chromium).
-8. Sube `_site/` y el informe LCOV como artefactos separados.
+8. Sube el informe LCOV como artefacto de diagnóstico y, si el evento es un `push` a `main` o una ejecución manual sobre `main`, genera el artefacto oficial `github-pages` directamente desde `_site/` mediante `actions/upload-pages-artifact`.
 
-**Job `deploy`** (solo para `main`, después de `verify`): descarga el artefacto verificado, prepara el artefacto de Pages y publica mediante las acciones fijadas por SHA. Una pull request nunca despliega el sitio. La protección de rama no se activa desde el código: sigue [`docs/GITHUB_BRANCH_PROTECTION.md`](docs/GITHUB_BRANCH_PROTECTION.md) para exigir el check `Verify frontend and Edge Functions` y bloquear force-push/eliminación de `main`.
+**Job `deploy`** (solo para `main`, después de `verify`): depende de `verify` mediante `needs: verify` y ejecuta `actions/deploy-pages` sobre el artefacto `github-pages` ya publicado. No vuelve a descargar ni a empaquetar el sitio. La separación entre jobs evita consultar los metadatos de un artefacto en el mismo instante en que acaba de subirse. Una pull request nunca despliega el sitio. La protección de rama no se activa desde el código: sigue [`docs/GITHUB_BRANCH_PROTECTION.md`](docs/GITHUB_BRANCH_PROTECTION.md) para exigir el check `Verify frontend and Edge Functions` y bloquear force-push/eliminación de `main`.
 
 Si falla una verificación o una prueba, el job `deploy` no se ejecuta.
 
@@ -432,7 +432,7 @@ La distribución actual incorpora pruebas automatizadas de contratos, recuperaci
 
 | Síntoma | Comprobación recomendada |
 |---|---|
-| GitHub Pages no publica | Revisa **Settings → Pages**, permisos del workflow y el último registro de **Actions**. El despliegue debe utilizar GitHub Actions. |
+| GitHub Pages no publica | Revisa **Settings → Pages**, que la fuente sea **GitHub Actions**, los permisos `pages: write` e `id-token: write` del job `deploy` y el último registro de **Actions**. El job `verify` debe subir `github-pages` con `actions/upload-pages-artifact`; `deploy` debe depender de `verify`. Si el artefacto aparece en la lista del run pero `deploy-pages` no puede leer sus metadatos, vuelve a ejecutar el job `deploy` una vez que la carga haya terminado y revisa el estado de GitHub. |
 | La verificación falla por `public/` | Elimina la copia antigua. La fuente web es la raíz del repositorio y `assets/`; `_site/` se genera al compilar. |
 | No se conecta a Supabase | Comprueba URL y clave `publishable` en `app-config.js`, el estado de las funciones y la consola del navegador. |
 | No se puede guardar un borrador | No cierres ni descartes la copia local. Comprueba la conexión, vuelve a sincronizar y revisa si la interfaz muestra un conflicto de revisión. |
