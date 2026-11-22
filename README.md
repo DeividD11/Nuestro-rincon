@@ -93,10 +93,10 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 - Gestión y revocación de sesiones/dispositivos.
 - Renovación de sesión y control de expiración.
 - Cambio de nombre visible, nombre de usuario, correo informativo y contraseña.
-- Recuperación de contraseña mediante diez códigos de respaldo independientes de un solo uso, entregados durante el registro; las cuentas antiguas pueden generar el conjunto desde Configuración → Seguridad.
+- Recuperación de contraseña con un código de respaldo individual de un solo uso durante el registro, compatible con la versión `auth-api` v11 actualmente desplegada.
 - Registro idempotente: si se pierde la respuesta después de crear la cuenta, el mismo intento puede reanudarse con los mismos datos y la contraseña original sin consumir otra invitación; los reintentos también quedan sujetos al límite de intentos.
-- Los diez códigos se generan antes de enviar el registro, se conservan temporalmente en `localStorage` (sin guardar la contraseña) y solo se eliminan cuando la persona confirma que los guardó. PostgreSQL conserva únicamente sus hashes. Si el resultado del servidor es incierto, la interfaz los marca como pendientes y no afirma que estén activos hasta confirmar la operación. Al utilizar uno, los restantes se invalidan y se deben regenerar después de iniciar sesión.
-- Rotación de los diez códigos desde Configuración tras confirmar la contraseña actual; todos los códigos anteriores se invalidan transaccionalmente.
+- El código individual se genera antes de enviar el registro y se conserva temporalmente en `localStorage` junto con el identificador idempotente (nunca se guarda la contraseña). PostgreSQL conserva únicamente su hash. Si el resultado del servidor es incierto, la interfaz lo marca como pendiente y no afirma que esté activo hasta confirmar la operación.
+- El backend local incluye una implementación ampliada de paquetes de diez códigos; su activación en producción requiere desplegar de forma coordinada la Edge Function y las migraciones compatibles. No se presupone activa en `auth-api` v11.
 - Registro con verificación transaccional de la invitación y límites de intentos por IP anonimizada y huella del código.
 - Eliminación de cuenta con verificación de contraseña y confirmación explícita.
 
@@ -454,7 +454,7 @@ La distribución actual incorpora pruebas automatizadas de contratos, recuperaci
 - [`docs/E2EE_ARCHITECTURE.md`](docs/E2EE_ARCHITECTURE.md): diseño, límites, recuperación de claves y migración futura del cifrado de extremo a extremo.
 - [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md): sincronización segura de código, historial Git, migraciones y Edge Functions.
 - [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md): procedimiento de copias cifradas y restauración de prueba; requiere configurar un bucket y credenciales externas.
-- [`docs/ACCOUNT_RECOVERY.md`](docs/ACCOUNT_RECOVERY.md): diez códigos independientes, bóveda local cifrada y recuperación sin Supabase Auth.
+- [`docs/ACCOUNT_RECOVERY.md`](docs/ACCOUNT_RECOVERY.md): compatibilidad del código de recuperación, bóveda local cifrada y estado de publicación del paquete de códigos.
 - [`supabase/schema/README.md`](supabase/schema/README.md): referencia del esquema disponible.
 
 ## 15. Licencia

@@ -6,10 +6,10 @@ La comprobación de solo lectura se realizó sobre el proyecto `tiqbmuubpbmxqvtk
 
 | Elemento | Estado remoto observado | Código local |
 |---|---|---|
-| `auth-api` | ACTIVE, v11 | El código local incorpora el limitador por cuenta/IP y el paquete de diez códigos de recuperación |
+| `auth-api` | ACTIVE, v11 | El frontend mantiene el contrato de alta legado `recoveryCode`; el backend local incluye además rutas de paquetes que aún requieren publicación coordinada |
 | `letters-api` | ACTIVE, v8 | El código local usa `list_user_letters_cursor` y `rename_app_profile` |
 | Historial remoto | 23 timestamps | 25 archivos SQL locales (inventario v25) |
-| RPC de paquete de recuperación | `register_app_user_with_invite_idempotent_bundle` y `rotate_app_recovery_codes_bundle` existen | Se invocan desde el código local |
+| RPC de paquete de recuperación | `register_app_user_with_invite_idempotent_bundle` y `rotate_app_recovery_codes_bundle` existen | Se mantienen como funciones de la versión local; no se invocan desde el formulario público mientras `auth-api` siga en v11 |
 | Paginación | `list_user_letters_cursor` existe | Se invoca desde el código local |
 | Renombrado de perfil | `rename_app_profile` existe | Se invoca desde el código local |
 
@@ -69,7 +69,7 @@ Una vez completados los pasos anteriores:
 
 1. Desplegar ambas funciones desde el mismo commit revisado, incluyendo `core.ts`, `auth-api/deno.json`, `letters-api/deno.json` y sus dependencias relativas. Las configuraciones Deno son específicas por función y están declaradas también en `supabase/config.toml`.
 2. Comprobar que las dos funciones conservan `verify_jwt=false` solo porque validan su propia sesión opaca dentro del handler; no desactivar `requireSession` ni exponer el secreto de servidor.
-3. Probar registro con diez códigos, reintento idempotente, rotación completa, invalidación del paquete anterior, login, refresh, renombrado transaccional, paginación con empate de timestamps y aislamiento entre dos cuentas.
+3. Probar el registro con el contrato singular y su reintento idempotente; solo después de desplegar el backend de paquetes, probar el alta/rotación con diez códigos y la invalidación del conjunto anterior. Completar también login, refresh, renombrado transaccional, paginación con empate de timestamps y aislamiento entre dos cuentas.
 4. Comprobar logs y códigos HTTP sin registrar contraseñas, tokens, códigos de recuperación ni contenido de cartas.
 
 No se ha desplegado ninguna Edge Function ni aplicado DDL en esta revisión.

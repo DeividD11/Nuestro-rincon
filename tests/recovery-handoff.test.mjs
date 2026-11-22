@@ -7,6 +7,7 @@ import {
   createPendingRegistration,
   createPendingRotation,
   createPendingRecoveryCodeBundle,
+  adaptPendingRegistrationToSingleCode,
   readPendingRecovery,
   savePendingRecovery,
   markPendingRecoveryConfirmed,
@@ -38,22 +39,29 @@ test('el traspaso del código de registro se persiste de forma duradera antes de
     invitationCode: 'NR1-PRIVATE-CODE', displayName: 'Persona', username: 'persona', password: 'NO-GUARDAR-ESTA-CONTRASEÑA'
   });
   assert.match(pending.requestId, /^[0-9a-f-]{36}$/i);
-  assert.equal(pending.purpose, 'registration_bundle');
-  assert.equal(pending.recoveryCodes.length, 10);
-  assert.ok(pending.recoveryCodes.every(code => /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(code)));
+  assert.equal(pending.purpose, 'registration');
+  assert.match(pending.recoveryCode, /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/);
   const stored = JSON.parse(values.get(PENDING_RECOVERY_STORAGE_KEY));
   assert.equal(stored.requestId, pending.requestId);
-  assert.deepEqual(stored.recoveryCodes, pending.recoveryCodes);
+  assert.equal(stored.recoveryCode, pending.recoveryCode);
+  assert.equal(stored.recoveryCodes, undefined);
   assert.equal(stored.password, undefined);
   assert.equal(globalThis.localStorage.getItem(PENDING_RECOVERY_STORAGE_KEY) !== null, true);
-  assert.equal(stored.purpose, 'registration_bundle');
+  assert.equal(stored.purpose, 'registration');
 }));
+
+test('el formulario de alta envía recoveryCode singular para mantener compatibilidad con auth-api v11', async () => {
+  const submit = await read('../assets/js/controllers/app-submit-handler.js');
+  const handoff = await read('../assets/js/services/recovery-handoff.js');
+  assert.match(handoff, /purpose: 'registration'[\s\S]*recoveryCode: createRecoveryCode\(\)/);
+  assert.match(submit, /pending\.purpose === 'registration_bundle' \? \{ recoveryCodes: registrationCodes \} : \{ recoveryCode: pending\.recoveryCode \}/);
+});
 
 test('el código y la clave de idempotencia se recuperan después de cerrar y reabrir el navegador', () => withLocalRecoveryStorage(() => {
   const first = createPendingRegistration({ invitationCode: 'NR1-CODE', displayName: 'Persona', username: 'persona' });
   const afterReload = readPendingRecovery();
   assert.equal(afterReload.requestId, first.requestId);
-  assert.deepEqual(afterReload.recoveryCodes, first.recoveryCodes);
+  assert.equal(afterReload.recoveryCode, first.recoveryCode);
   assert.equal(afterReload.invitationCode, first.invitationCode);
 }));
 
@@ -64,8 +72,23 @@ test('la confirmación del backend sobrevive a una recarga sin confundirse con u
   markPendingRecoveryConfirmed();
   const afterReload = readPendingRecovery();
   assert.equal(afterReload.requestId, pending.requestId);
-  assert.deepEqual(afterReload.recoveryCodes, pending.recoveryCodes);
+  assert.equal(afterReload.recoveryCode, pending.recoveryCode);
   assert.equal(afterReload.serverConfirmed, true);
+}));
+
+test('un alta bundle pendiente de una versión anterior se adapta al contrato singular sin cambiar la idempotencia', () => withLocalRecoveryStorage(() => {
+  const previous = savePendingRecovery({
+    purpose: 'registration_bundle',
+    requestId: '4c36e77f-93ad-4cd8-945e-74bcf83f4a8c',
+    recoveryCodes: Array.from({ length: 10 }, (_, i) => Array.from({ length: 8 }, (_, group) => (i * 8 + group + 1).toString(16).toUpperCase().padStart(6, '0').slice(-6)).join('-')),
+    invitationCode: 'NR1-PRIVATE-CODE', displayName: 'Persona', username: 'persona'
+  });
+  const adapted = adaptPendingRegistrationToSingleCode(previous);
+  assert.equal(adapted.purpose, 'registration');
+  assert.equal(adapted.requestId, previous.requestId);
+  assert.equal(adapted.recoveryCode, previous.recoveryCodes[0]);
+  assert.equal(adapted.recoveryCodes, undefined);
+  assert.equal(readPendingRecovery().recoveryCode, previous.recoveryCodes[0]);
 }));
 
 test('una rotación nueva emite diez códigos con identificador idempotente y se puede limpiar al confirmar que fue guardada', () => withLocalRecoveryStorage(() => {
@@ -114,6 +137,7 @@ test('registro reintentable, entrega separada de sesión y rotación autenticada
   assert.match(controller, /isUncertainRequestError/);
   const authController = await read('../assets/js/controllers/auth-controller.js');
   assert.match(authController, /createPendingRecoveryCodeBundle/);
+  assert.match(authController, /adaptPendingRegistrationToSingleCode\(existing\)/);
   assert.match(view, /id="recovery-code-form"/);
   assert.match(view, /data-action="retry-recovery-operation"/);
   assert.match(view, /Códigos pendientes de confirmación/);

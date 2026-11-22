@@ -92,13 +92,40 @@ export function savePendingRecovery(pending) {
 }
 
 export function createPendingRegistration(data = {}) {
+  // auth-api v11 desplegada en producción utiliza el contrato legado `recoveryCode`
+  // (singular). El alta vuelve a emitir un código único hasta publicar de forma
+  // coordinada el backend que acepta `recoveryCodes` y el RPC de paquetes.
   return savePendingRecovery({
-    purpose: 'registration_bundle',
+    purpose: 'registration',
     requestId: makeRequestId(),
-    recoveryCodes: createRecoveryCodeBundle(10),
+    recoveryCode: createRecoveryCode(),
     invitationCode: data.invitationCode,
     displayName: data.displayName,
     username: data.username
+  });
+}
+
+/**
+ * Adapta intentos de registro bundle guardados por una versión anterior del
+ * frontend al contrato `recoveryCode` de auth-api v11. Conserva requestId y
+ * el primer código para que un alta ya confirmada pueda reanudarse de forma
+ * idempotente sin volver a consumir la invitación.
+ */
+export function adaptPendingRegistrationToSingleCode(pending) {
+  if (pending?.purpose !== 'registration_bundle') return pending;
+  const recoveryCode = Array.isArray(pending.recoveryCodes) ? pending.recoveryCodes[0] : '';
+  if (typeof recoveryCode !== 'string' || !/^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(recoveryCode)) {
+    throw new Error('RECOVERY_HANDOFF_INVALID');
+  }
+  return savePendingRecovery({
+    purpose: 'registration',
+    requestId: pending.requestId,
+    recoveryCode,
+    invitationCode: pending.invitationCode,
+    displayName: pending.displayName,
+    username: pending.username,
+    serverConfirmed: pending.serverConfirmed,
+    createdAt: pending.createdAt
   });
 }
 

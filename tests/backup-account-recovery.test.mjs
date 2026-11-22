@@ -28,7 +28,7 @@ test('una frase incorrecta o un archivo alterado no permite abrir la copia', asy
   await assert.rejects(() => decryptRecoveryVault(tampered, 'otra frase secreta de respaldo'), /COPIA_PROTEGIDA/);
 });
 
-test('el registro genera diez códigos aleatorios independientes y no guarda la contraseña en el traspaso', () => {
+test('el registro usa un código compatible con auth-api v11 y no guarda la contraseña en el traspaso', () => {
   const previousStorage = globalThis.localStorage;
   const values = new Map();
   globalThis.localStorage = {
@@ -39,11 +39,9 @@ test('el registro genera diez códigos aleatorios independientes y no guarda la 
   try {
     const pending = createPendingRegistration({ invitationCode: 'NR1-TEST', displayName: 'Persona', username: 'persona-test', password: 'no-debe-guardarse' });
     const restored = readPendingRecovery();
-    assert.equal(pending.purpose, 'registration_bundle');
-    assert.equal(pending.recoveryCodes.length, 10);
-    assert.equal(new Set(pending.recoveryCodes).size, 10);
-    assert.ok(pending.recoveryCodes.every(code => /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/.test(code)));
-    assert.deepEqual(restored.recoveryCodes, pending.recoveryCodes);
+    assert.equal(pending.purpose, 'registration');
+    assert.match(pending.recoveryCode, /^(?:[A-F0-9]{6}-){7}[A-F0-9]{6}$/);
+    assert.equal(restored.recoveryCode, pending.recoveryCode);
     assert.doesNotMatch(values.values().next().value, /no-debe-guardarse|password/i);
   } finally {
     clearPendingRecovery();
@@ -80,7 +78,8 @@ test('la copia se entrega como bundle temporal y permite compatibilidad con una 
   const view = await readAppViewSource();
   assert.match(handoff, /createPendingRecoveryCodeBundle/);
   assert.match(handoff, /rotation_bundle/);
-  assert.match(handoff, /purpose: 'registration_bundle'/);
+  assert.match(handoff, /purpose: 'registration'/);
+  assert.match(handoff, /adaptPendingRegistrationToSingleCode/);
   assert.match(handoff, /recoveryCodes\.length !== 10/);
   assert.match(controller, /pending\.purpose === 'rotation'/);
   assert.match(controller, /pending\.recoveryCodes/);

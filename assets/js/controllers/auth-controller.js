@@ -1,5 +1,5 @@
 import { showConfirmDialog } from '../utils/dom.js';
-import { readPendingRecovery, createPendingRegistration, createPendingRecoveryCodeBundle, clearPendingRecovery } from '../services/recovery-handoff.js';
+import { readPendingRecovery, createPendingRegistration, createPendingRecoveryCodeBundle, adaptPendingRegistrationToSingleCode, clearPendingRecovery } from '../services/recovery-handoff.js';
 
 export class AuthController {
     getRegistrationRecoveryHandoff(data) {
@@ -9,7 +9,7 @@ export class AuthController {
       if (['registration', 'registration_bundle'].includes(existing?.purpose)
         && normalize(existing.username) === normalize(data.username)
         && normalizeInvite(existing.invitationCode) === normalizeInvite(data.invitationCode)) {
-        return existing;
+        return adaptPendingRegistrationToSingleCode(existing);
       }
       return createPendingRegistration(data);
     }
