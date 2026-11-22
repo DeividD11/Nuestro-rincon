@@ -165,8 +165,14 @@ test('la Papelera expone los estados seleccionado, hover, pendiente y deshabilit
   const cards = page.locator('.letter-card');
   await expect(cards).toHaveCount(2);
   const firstCard = cards.first();
+  const supportsHover = await page.evaluate(() => matchMedia('(hover: hover) and (pointer: fine)').matches);
   await firstCard.hover();
-  await expect(firstCard).not.toHaveCSS('transform', 'none');
+  if (supportsHover) {
+    await expect(firstCard).not.toHaveCSS('transform', 'none');
+  } else {
+    // En pantallas táctiles el diseño evita efectos que dependen de un cursor inexistente.
+    await expect(firstCard).toHaveCSS('transform', 'none');
+  }
 
   const waitingButton = firstCard.getByRole('button', { name: 'Esperando confirmación' });
   await expect(waitingButton).toBeDisabled();

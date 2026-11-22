@@ -127,6 +127,24 @@ test('la navegación enfoca el encabezado después de renderizar la sección', a
   assert.match(letter, /event\.key === 'Escape'/);
 });
 
+test('el texto de metadatos y estado de entrega conserva contraste AA sobre el papel oscuro', async () => {
+  const css = await read('../assets/css/app.css');
+  assert.match(css, /html\[data-theme="dark"\] \.letter-paper \.letter-byline,[\s\S]*?html\[data-theme="dark"\] \.letter-paper \.eyebrow\{color:#6f5a50\}/);
+  assert.match(css, /html\[data-theme="dark"\] \.letter-paper \.delivery-status\{color:#496749\}/);
+
+  const luminance = hex => {
+    const rgb = [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255);
+    const channels = rgb.map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const contrast = (foreground, background) => {
+    const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+    return (values[0] + 0.05) / (values[1] + 0.05);
+  };
+  assert.ok(contrast('#6f5a50', '#f4eee5') >= 4.5, 'los metadatos de la carta deben cumplir WCAG AA');
+  assert.ok(contrast('#496749', '#f4eee5') >= 4.5, 'el estado de entrega debe cumplir WCAG AA');
+});
+
 test('la hoja de estilos contempla foco visible, áreas táctiles y movimiento reducido', async () => {
   const css = await readCssBundle();
   assert.match(css, /\.skip-link:focus/);
