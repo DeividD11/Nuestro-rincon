@@ -3,6 +3,25 @@ begin;
 -- Paginación keyset para las carpetas. Se conserva list_user_letters para los
 -- agregados compactos del dashboard; las vistas paginadas dejan de ejecutar
 -- COUNT(*) exacto en cada página.
+
+-- Normalizador inmutable para indexar el contenido sin cambiar el criterio
+-- histórico (entidades HTML habituales, etiquetas convertidas en espacios y minúsculas).
+create or replace function public.normalize_letter_search_body(p_body text)
+returns text
+language sql
+immutable
+parallel safe
+set search_path to 'pg_catalog'
+as $function$
+  select lower(regexp_replace(
+    replace(replace(replace(replace(replace(coalesce(p_body, ''), '&nbsp;', ' '), '&amp;', '&'), '&lt;', '<'), '&gt;', '>'), '&quot;', '"'),
+    '<[^>]*>', ' ', 'g'
+  ));
+$function$;
+
+revoke execute on function public.normalize_letter_search_body(text) from public, anon, authenticated;
+grant execute on function public.normalize_letter_search_body(text) to service_role;
+
 create or replace function public.list_user_letters_cursor(
   p_user_id uuid,
   p_folder text,
@@ -17,6 +36,13 @@ set search_path to 'pg_catalog', 'public'
 as $function$
 declare
   v_search text := lower(btrim(coalesce(p_search, '')));
+  -- LIKE permite que pg_trgm acelere búsquedas de tres o más caracteres.
+  -- Los comodines introducidos por el usuario se escapan para conservar la
+  -- semántica de substring literal que antes proporcionaba strpos().
+  v_search_pattern text := '%' || replace(
+    replace(replace(lower(btrim(coalesce(p_search, ''))), E'\\', E'\\\\'), '%', E'\\%'),
+    '_', E'\\_'
+  ) || '%';
   v_items jsonb := '[]'::jsonb;
   v_has_more boolean := false;
   v_next_cursor jsonb := null;
@@ -67,14 +93,8 @@ begin
       )
       and (
         v_search = ''
-        or strpos(lower(coalesce(l.title, '')), v_search) > 0
-        or strpos(
-          lower(regexp_replace(
-            replace(replace(replace(replace(replace(coalesce(l.body, ''), '&nbsp;', ' '), '&amp;', '&'), '&lt;', '<'), '&gt;', '>'), '&quot;', '"'),
-            '<[^>]*>', ' ', 'g'
-          )),
-          v_search
-        ) > 0
+        or lower(coalesce(l.title, '')) like v_search_pattern escape E'\\'
+        or public.normalize_letter_search_body(l.body) like v_search_pattern escape E'\\'
       )
   ), page_candidates as materialized (
     select e.*

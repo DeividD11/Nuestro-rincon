@@ -25,7 +25,10 @@ const excludedNames = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
 const includedEnvExamples = new Set(['.env.example', '.env.sample', '.env.template']);
 
 function shouldExclude(name, relativePath, isDirectory) {
-  if (isDirectory) return excludedDirectories.has(name);
+  // Excluye .git como directorio y como archivo marcador de un git worktree.
+  // La comprobación por segmentos también protege frente a rutas anidadas.
+  if (name === '.git' || relativePath.split('/').includes('.git')) return true;
+  if (isDirectory && excludedDirectories.has(name)) return true;
   if (excludedNames.has(name)) return true;
   if (name.endsWith('.zip') || name.endsWith('.log') || name.endsWith('.tsbuildinfo')
     || name.endsWith('.age') || name.endsWith('.dump') || name.endsWith('.backup')) return true;
@@ -69,6 +72,8 @@ function u16(value) { const buffer = Buffer.allocUnsafe(2); buffer.writeUInt16LE
 function u32(value) { const buffer = Buffer.allocUnsafe(4); buffer.writeUInt32LE(value >>> 0); return buffer; }
 
 const files = await collect(root);
+const leakedGitEntries = files.filter(file => file.relativePath.split('/').includes('.git'));
+if (leakedGitEntries.length) throw new Error(`El empaquetado detectó metadatos Git: ${leakedGitEntries.map(file => file.relativePath).join(', ')}`);
 if (!files.length) throw new Error('No se encontraron archivos para empaquetar.');
 if (files.length > 0xffff) throw new Error('El paquete excede el límite ZIP clásico de archivos.');
 

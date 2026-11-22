@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -20,7 +21,7 @@ test('la sesión revocada desaparece inmediatamente y se vuelve a verificar en C
 });
 
 test('la eliminación de cuenta requiere contraseña y confirmación reforzada', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   const auth = await read('../supabase/functions/auth-api/index.ts');
   const migrations = await read('../supabase/migrations/20261117033226_secure_account_deletion.sql');
@@ -88,7 +89,7 @@ test('el guardado automático nunca restaura un borrador que ya está en Papeler
 
 test('descartar un borrador es de una sola pulsación y retira la tarjeta sin esperar la cola', async () => {
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(controller, /if \(!isDraft && !\(await showConfirmDialog\(/);
   assert.match(controller, /this\.discardedDraftIds\.add\(letterId\)/);
   assert.doesNotMatch(controller, /waitForDraftSyncQueue/);
@@ -130,7 +131,7 @@ test('la vinculación inicial de destinatario está permitida una sola vez y no 
 test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto coherente', async () => {
   const css = await readCssBundle();
   const html = await read('../index.html');
-  const appView = await read('../assets/js/views/app-view.js');
+  const appView = await readAppViewSource();
   const widths = [
     { width: 320, rule: /@media \(max-width: 360px\)/ },
     { width: 375, rule: /@media \(max-width: 720px\)/ },

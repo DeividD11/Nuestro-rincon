@@ -507,6 +507,14 @@ Deno.serve(async (req: Request) => {
         await applyDistributedFailureFriction(attempt, true);
         throw new Error('RECOVERY_CODE_INVALID');
       }
+      // La recuperación revoca todas las sesiones; también elimina sus
+      // suscripciones push para no conservar destinos de dispositivos invalidados.
+      const recoveredUserId = String(result.user_id || '');
+      if (recoveredUserId) {
+        await dbRequest(`push_subscriptions?user_id=eq.${encodeURIComponent(recoveredUserId)}`, {
+          method: 'DELETE', headers: { Prefer: 'return=minimal' }
+        });
+      }
       return jsonResponse(req, {
         ok: true,
         message: 'Contraseña actualizada. Ya puedes iniciar sesión con la nueva contraseña.'
@@ -695,6 +703,7 @@ Deno.serve(async (req: Request) => {
         p_now: nowIso()
       });
       if (changed.status !== 'changed') throw new Error('PASSWORD_UPDATE_FAILED');
+      await dbRequest(`push_subscriptions?user_id=eq.${encodeURIComponent(session.userId)}&session_id=neq.${encodeURIComponent(session.sessionId)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
       return jsonResponse(req, { ok: true, message: 'Contraseña actualizada. Las demás sesiones fueron revocadas.' }, 200, headers);
     }
 
@@ -718,6 +727,7 @@ Deno.serve(async (req: Request) => {
         if (result.status === 'session_invalid') throw new Error('SESSION_EXPIRED');
         throw new Error('ACCOUNT_DELETE_FAILED');
       }
+      await dbRequest(`push_subscriptions?user_id=eq.${encodeURIComponent(session.userId)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
       return jsonResponse(req, { ok: true, deleted: true, sharedLettersPreserved: result.shared_letters_preserved === true }, 200, headers);
     }
 
@@ -732,6 +742,7 @@ Deno.serve(async (req: Request) => {
         method: 'PATCH', headers: { Prefer: 'return=minimal' },
         body: JSON.stringify({ revoked_at: now })
       });
+      await dbRequest(`push_subscriptions?session_id=eq.${encodeURIComponent(session.sessionId)}&user_id=eq.${encodeURIComponent(session.userId)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
       return jsonResponse(req, { ok: true }, 200, headers);
     }
 

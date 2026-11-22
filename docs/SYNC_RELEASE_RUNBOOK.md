@@ -1,79 +1,97 @@
-# Sincronización segura de código, GitHub y Supabase
+# Runbook de reconciliación y publicación Supabase
 
-## Estado de referencia
+## Estado observado el 21 de noviembre de 2026
 
-La revisión del 21 de noviembre de 2026 detectó que el ZIP de trabajo contenía cambios locales respecto al único commit incluido (`5a071371cde5dcc22a5bbfa675f3c2e98ca54560`). El proyecto GitHub `DeividD11/Nuestro-rincon` utiliza `main` como rama predeterminada.
+La comprobación de solo lectura se realizó sobre el proyecto `tiqbmuubpbmxqvtkcdhq` (PostgreSQL 17.11, estado `ACTIVE_HEALTHY`). No se ejecutaron migraciones, reparaciones del ledger, escrituras SQL ni despliegues.
 
-En Supabase, el proyecto `tiqbmuubpbmxqvtkcdhq` tiene 23 migraciones registradas y Edge Functions `auth-api` v11 y `letters-api` v8. La inspección en vivo encontró que las ocho funciones SQL y estructuras declaradas por las primeras cuatro migraciones locales no registradas ya existen en `public`, con permisos `EXECUTE` exclusivos de `service_role`. También están presentes los índices de paginación seleccionados y el trigger que reevalúa la purga al deshabilitar una cuenta. Las Edge Functions activas todavía no usan las RPC locales más recientes.
+| Elemento | Estado remoto observado | Código local |
+|---|---|---|
+| `auth-api` | ACTIVE, v11 | El código local incorpora el limitador por cuenta/IP y el paquete de diez códigos de recuperación |
+| `letters-api` | ACTIVE, v8 | El código local usa `list_user_letters_cursor` y `rename_app_profile` |
+| Historial remoto | 23 timestamps | 25 archivos SQL locales (inventario v25) |
+| RPC de paquete de recuperación | `register_app_user_with_invite_idempotent_bundle` y `rotate_app_recovery_codes_bundle` existen | Se invocan desde el código local |
+| Paginación | `list_user_letters_cursor` existe | Se invoca desde el código local |
+| Renombrado de perfil | `rename_app_profile` existe | Se invoca desde el código local |
 
-Esta diferencia requiere reconciliar esquema, ledger y código desplegado; no debe resolverse ejecutando todas las migraciones por orden sin comprobar primero sus efectos.
+El cotejo de timestamps encontró 15 versiones comunes, diez archivos locales no registrados y ocho versiones remotas sin archivo homónimo en el inventario v25. Los diez archivos locales incluyen tres migraciones históricas/legacy de timestamps `20261116000000`, `20261116001000` y `20261116002000`, además de siete propuestas (`20261119064344`, `20261119090000`, `20261120173200`, `20261120235900`, `20261121200000`, `20261121210000` y `20261121220000`).
 
-## 1. Preparar un clon Git coherente
+La inspección del esquema también encontró los RPC principales de varias de esas siete propuestas, los recibos de paquetes de recuperación, las columnas e índices de paginación y el trigger de protección de participantes/purga. Esto **no demuestra por sí solo** que cada sentencia de cada migración coincida con el estado remoto ni que todos sus efectos secundarios estén presentes. No se debe ejecutar ni marcar ninguna migración como aplicada sin un diff completo y una copia recuperable.
 
-No uses el directorio `.git` incluido en un ZIP antiguo como sustituto de un clon actualizado. Clona el repositorio de GitHub y crea una rama de trabajo:
+### Acceso y RLS
 
-```bash
-git clone https://github.com/DeividD11/Nuestro-rincon.git
-cd Nuestro-rincon
-git switch -c fix/deno-crypto-types-and-release-gates
+Las 21 tablas observadas en `public` tienen RLS activado. En el inventario de privilegios, `anon` y `authenticated` no tienen `SELECT` ni `INSERT` directo; el backend personalizado utiliza `service_role` desde las Edge Functions. El advisor informa tablas con RLS sin políticas, pero en este modelo de acceso directo revocado el aviso es informativo: no se deben crear políticas genéricas para silenciarlo. Revisa de nuevo grants, funciones y RLS cada vez que cambie la arquitectura.
+
+La organización está en plan Free y no tiene ramas Supabase creadas. El flujo no presupone la disponibilidad de Branching ni crea una rama de coste variable.
+
+## 1. Generar un informe de reconciliación estrictamente de solo lectura
+
+Requiere `psql` y Node.js. Usa una conexión PostgreSQL del proyecto correcto; no incluyas la contraseña en el repositorio, la línea de comandos compartida ni un archivo versionado.
+
+PowerShell:
+
+```powershell
+$env:NR_RECONCILE_PROJECT_REF = 'tiqbmuubpbmxqvtkcdhq'
+$env:NR_RECONCILE_DATABASE_URL = '<URL PostgreSQL del proyecto>'
+npm run supabase:reconcile:readonly
 ```
 
-Extrae el ZIP limpio de esta entrega en una carpeta temporal y copia su contenido sobre el clon, **sin reemplazar ni borrar la carpeta `.git/` del clon**. No copies `.env`, credenciales, `node_modules/`, `_site/` ni artefactos temporales.
-
-Comprueba que el origen es el repositorio esperado y revisa los cambios:
+Bash:
 
 ```bash
-git remote -v
-git status --short
-git diff --check
-git diff --stat
+export NR_RECONCILE_PROJECT_REF='tiqbmuubpbmxqvtkcdhq'
+read -rsp 'URL PostgreSQL: ' NR_RECONCILE_DATABASE_URL; export NR_RECONCILE_DATABASE_URL; echo
+npm run supabase:reconcile:readonly
+unset NR_RECONCILE_DATABASE_URL
 ```
 
-## 2. Ejecutar las verificaciones localmente
+El script valida que la URL coincida con el ref, ejecuta `BEGIN READ ONLY`, fija límites de tiempo y consulta solo metadatos: historial, firmas/huellas de RPC, propietarios y grants, RLS, índices y triggers. No llama al Supabase CLI, no escribe un artefacto remoto, no cambia el historial y no despliega funciones.
 
-```bash
-npm run check
-npm test
-npm run build:pages
-```
+Para listar las versiones de Edge Functions con autenticación CLI, ejecuta además `supabase functions list --remote=tiqbmuubpbmxqvtkcdhq`; es un comando de lectura. La lista debe mostrar `auth-api` v11 y `letters-api` v8 hasta que se apruebe una publicación.
 
-Para comprobar las Edge Functions instala Deno 2.9.8 y ejecuta:
+El timestamp del ledger y la presencia de un RPC no prueban identidad de DDL. Compara sus firmas, `definitionMd5`, propietario, privilegios, dependencias, columnas, restricciones, índices y triggers con los archivos locales y el baseline conocido.
 
-```bash
-deno --version
-npm run check:edge
-```
+## 2. Reconciliar las migraciones
 
-El workflow de GitHub Actions también ejecutará `deno check` en cada pull request dirigida a `main`. La rama no debe fusionarse si falla el job `verify`.
+1. Generar un respaldo cifrado verificable y restaurarlo en un proyecto desechable antes de tocar el esquema remoto.
+2. Revisar cada una de las siete propuestas locales no registradas. Clasificar cada sentencia como: ya aplicada y equivalente, aplicada con diferencias, ausente o obsoleta.
+3. Revisar por separado los ocho timestamps remotos sin archivo local. Recuperar los archivos fuente históricos desde un snapshot fiable o construir y revisar un baseline; no inventarlos a partir de nombres.
+4. Para cualquier migración local no registrada, solo usar `supabase migration repair --status applied <timestamp>` si se demostró que **todo** su efecto SQL ya existe y coincide. `migration repair` solo edita el ledger; no ejecuta SQL.
+5. Si faltan efectos, crear una migración nueva, aditiva e idempotente con nombre/timestamp nuevo, probarla en un clon aislado y documentar cualquier diferencia. No reescribir un archivo histórico ya aplicado.
+6. Ejecutar `npm run test:db`, pruebas pgTAP, pruebas de integración con dos cuentas y smoke tests antes de liberar funciones.
 
-## 3. Commit y Pull Request
+Nunca usar `supabase db reset --remote` en producción. No ejecutar `db push` hasta resolver los ocho timestamps remotos sin archivo, los diez archivos locales sin registro (tres legacy y siete propuestas) y el diff real del esquema.
 
-Después de revisar el diff completo y confirmar que no contiene datos privados:
+## 3. Publicar las Edge Functions como una sola versión compatible
 
-```bash
-git add -A
-git diff --cached --check
-git diff --cached --stat
-git diff --cached
-git commit -m "Fix Deno Edge Function types and gate Pages deployment"
-git push -u origin fix/deno-crypto-types-and-release-gates
-```
+El código remoto actual está por detrás del ZIP local: `auth-api` v11 usa el flujo anterior de un solo código y `letters-api` v8 todavía hace el renombrado con dos PATCH y no usa la RPC de cursor. La base de datos observada ya contiene las RPC que invoca el código local y sus permisos SQL están reservados a `service_role`, pero falta comprobar equivalencia completa de sus definiciones y ejecutar pruebas dinámicas.
 
-Abre un pull request desde esa rama hacia `main`. No se recomienda enviar estos cambios directamente a `main`: el workflow valida primero estructura, tipos Deno, pruebas y compilación. Al fusionarse una versión verificada en `main`, GitHub Pages publicará el artefacto que produjo el job de verificación.
+Una vez completados los pasos anteriores:
 
-## 4. Reconciliar Supabase sin repetir migraciones
+1. Desplegar ambas funciones desde el mismo commit revisado, incluyendo `core.ts`, `auth-api/deno.json`, `letters-api/deno.json` y sus dependencias relativas. Las configuraciones Deno son específicas por función y están declaradas también en `supabase/config.toml`.
+2. Comprobar que las dos funciones conservan `verify_jwt=false` solo porque validan su propia sesión opaca dentro del handler; no desactivar `requireSession` ni exponer el secreto de servidor.
+3. Probar registro con diez códigos, reintento idempotente, rotación completa, invalidación del paquete anterior, login, refresh, renombrado transaccional, paginación con empate de timestamps y aislamiento entre dos cuentas.
+4. Comprobar logs y códigos HTTP sin registrar contraseñas, tokens, códigos de recuperación ni contenido de cartas.
 
-Antes de desplegar Edge Functions:
+No se ha desplegado ninguna Edge Function ni aplicado DDL en esta revisión.
 
-1. Obtener un respaldo verificable y probar su restauración en un proyecto aislado.
-2. Comparar las ocho funciones SQL definidas por los cuatro scripts de dominio anteriores con las definiciones reales (`pg_get_functiondef`), firmas, propietarios, permisos y dependencias.
-3. Comparar constraints, columnas, triggers e índices de los cuatro scripts anteriores con el estado remoto real. La quinta migración, `20261121200000_recovery_code_bundles.sql`, es nueva: no está en producción y sus objetos deben probarse como DDL nuevo, incluido el RPC del alta con diez códigos.
-4. Ejecutar `npm run test:db` (psql + parser TAP) en una base aislada y las pruebas de integración con dos cuentas de prueba.
-5. Solo después decidir si se necesita aplicar DDL, reparar el historial de migraciones para reflejar objetos ya existentes, o ambas cosas. No marcar una migración como aplicada hasta demostrar que todo su efecto ya está presente y coincide exactamente.
-6. Desplegar `auth-api` y `letters-api` como un conjunto compatible con las RPC existentes y ejecutar pruebas de humo con las cuentas de prueba.
+## 4. Backups y recuperación: puerta obligatoria antes de publicar
 
-No usar `supabase db push --remote` contra producción para resolver la diferencia descrita. No se ha aplicado ningún cambio de base de datos ni desplegado funciones como parte de esta entrega.
+La organización figura en plan Free; no hay backups diarios administrados en ese plan. El workflow externo `backup-database.yml` no quedará operativo hasta configurar el Environment `database-backups`, el bucket privado, el destinatario `age` y las credenciales de carga. La ejecución programada tampoco se considera evidencia de recuperación.
 
-## 5. Activación E2EE: puerta separada
+Antes del despliegue:
 
-La migración de los diez códigos de respaldo `20261121200000_recovery_code_bundles.sql` y su nueva versión de `auth-api` deben validarse y desplegarse juntos; la función antigua no acepta `recoveryCodes` en el registro. El cifrado de extremo a extremo no forma parte de este arreglo de CI ni de la sincronización. `docs/E2EE_ARCHITECTURE.md` sigue siendo una propuesta. Antes de activar E2EE debe aprobarse y probarse el protocolo criptográfico, la identidad/huella de ambas cuentas, el respaldo/recuperación de claves, el cifrado de borradores, el formato versionado de ciphertext y la migración reversible y verificable del historial en claro. No desplegar un esquema híbrido que anuncie privacidad E2EE mientras el servidor siga recibiendo contenido legible.
+1. Configurar secretos/variables conforme a `docs/BACKUP_RESTORE.md`.
+2. Ejecutar un backup manual y verificar el objeto cifrado descargándolo, comparando SHA-256 y descifrando una copia de prueba.
+3. Restaurar en un proyecto Supabase nuevo y aislado, nunca en `tiqbmuubpbmxqvtkcdhq`.
+4. Comprobar esquema, seis recuentos, login de prueba, letras/respuestas y permisos de dos cuentas.
+5. Registrar RPO/RTO observados, duración, checksum y resultado.
+
+El manifiesto incluye ahora una instantánea de `supabase_migrations.schema_migrations` solo como metadato de referencia. La restauración no inserta ese ledger en el destino: una base restaurada desde un dump lógico no equivale a reconstruir de manera validada su historial de migraciones.
+
+## 5. E2EE es una puerta de protocolo separada
+
+`docs/E2EE_ARCHITECTURE.md` sigue siendo una propuesta: hoy las cartas y los borradores se almacenan/transmiten en texto legible y no existen claves ni ciphertext E2EE. No se ha añadido criptografía parcial ni se afirma que esté activada.
+
+Antes de una implementación se necesita un protocolo versionado, revisión criptográfica independiente, biblioteca HPKE/Argon2id fijada, huellas verificadas entre las dos cuentas, respaldo/restauración de claves probado en dispositivos limpios, cifrado de borradores y pruebas contra XSS/alteración/replay. La migración de cartas históricas y la eliminación del plaintext necesitan confirmación de descifrado de ambos participantes. La recuperación normal de contraseña no puede recuperar claves E2EE.
+
+**Prohibido activar una bandera E2EE o cambiar la interfaz para afirmar privacidad de extremo a extremo mientras el backend siga recibiendo texto legible.** Esta entrega prepara las puertas de reconciliación y respaldo; no implementa E2EE de producción.

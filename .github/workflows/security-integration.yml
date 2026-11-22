@@ -22,18 +22,54 @@ jobs:
       NR_TEST_ACCOUNT_B_PASSWORD: ${{ secrets.NR_TEST_ACCOUNT_B_PASSWORD }}
       NR_TEST_ACCOUNT_B_DISPLAY_NAME: ${{ secrets.NR_TEST_ACCOUNT_B_DISPLAY_NAME }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Pin npm to the lockfile toolchain
+        run: |
+          npm install --global npm@11.19.1
+          test "$(npm --version)" = '11.19.1'
+
       - name: Install exact dependency tree
         run: npm ci
-      - name: Validate isolated project
+      - name: Set up Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.8
+      - name: Validate isolated project and every required secret
         env:
           PRODUCTION_PROJECT_REF: tiqbmuubpbmxqvtkcdhq
         run: |
-          node --input-type=module -e "const ref=process.env.NR_TEST_PROJECT_REF; const value=process.env.NR_TEST_SUPABASE_URL; if (!ref || !value || ref===process.env.PRODUCTION_PROJECT_REF || process.env.NR_TEST_CONFIRM_ISOLATED!=='YES') process.exit(1); const u=new URL(value); if (u.hostname !== ref+'.supabase.co' || u.protocol !== 'https:') process.exit(1);"
+          node --input-type=module <<'NODE'
+          const ref = process.env.NR_TEST_PROJECT_REF || '';
+          const raw = process.env.NR_TEST_SUPABASE_URL || '';
+          const required = [
+            'NR_TEST_PUBLISHABLE_KEY', 'NR_TEST_BOOTSTRAP_INVITATION',
+            'NR_TEST_ACCOUNT_A_USERNAME', 'NR_TEST_ACCOUNT_A_PASSWORD', 'NR_TEST_ACCOUNT_A_DISPLAY_NAME',
+            'NR_TEST_ACCOUNT_B_USERNAME', 'NR_TEST_ACCOUNT_B_PASSWORD', 'NR_TEST_ACCOUNT_B_DISPLAY_NAME'
+          ];
+          const missing = required.filter(name => !process.env[name]);
+          if (!/^[a-z0-9]{20}$/.test(ref) || ref === process.env.PRODUCTION_PROJECT_REF) {
+            throw new Error('NR_TEST_PROJECT_REF debe ser un proyecto aislado distinto de producción.');
+          }
+          if (process.env.NR_TEST_CONFIRM_ISOLATED !== 'YES' || !raw || missing.length) {
+            throw new Error(`Faltan datos de la prueba aislada: ${missing.join(', ') || 'URL/confirmación'}`);
+          }
+          const url = new URL(raw);
+          if (url.protocol !== 'https:' || url.hostname !== `${ref}.supabase.co`) {
+            throw new Error('NR_TEST_SUPABASE_URL no coincide con NR_TEST_PROJECT_REF.');
+          }
+          NODE
+      - name: Verify project and run local contracts
+        run: |
+          npm run check
+          npm test
+      - name: Check Edge Functions and request parser tests
+        run: |
+          npm run check:edge
+          npm run test:edge-unit
       - name: Run two-account security scenarios
         run: npm run test:integration

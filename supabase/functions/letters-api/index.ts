@@ -1,9 +1,123 @@
+import webPush from 'web-push';
 import {
   corsHeaders, dbRequest, errorStatus, jsonResponse, nowIso, patchRows,
-  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectCursorPageRows, selectRows
+  readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectCursorPageRows, selectRows, sha256Hex
 } from '../_shared/core.ts';
 
 const LETTER_FIELDS = 'id,thread_id,sender_id,recipient_id,reply_to_letter_id,title,body,status,revision,created_at,updated_at,sent_at,content_purged_at,creation_request_id';
+
+
+type VapidConfig = { publicKey: string; privateKey: string; subject: string };
+
+function vapidConfig(): VapidConfig | null {
+  const publicKey = Deno.env.get('VAPID_PUBLIC_KEY') || '';
+  const privateKey = Deno.env.get('VAPID_PRIVATE_KEY') || '';
+  const subject = Deno.env.get('VAPID_SUBJECT') || '';
+  const configuredValues = [publicKey, privateKey, subject].filter(Boolean).length;
+  if (configuredValues === 0) return null;
+  if (configuredValues !== 3) throw new Error('PUSH_VAPID_CONFIGURATION_INVALID');
+  if (!/^[A-Za-z0-9_-]{80,100}$/.test(publicKey) || !/^[A-Za-z0-9_-]{40,100}$/.test(privateKey)
+    || !/^(mailto:[^\s]+|https:\/\/[^\s]+)$/.test(subject)) {
+    throw new Error('PUSH_VAPID_CONFIGURATION_INVALID');
+  }
+  return { publicKey, privateKey, subject };
+}
+
+function parsePushEndpoint(value: unknown): string {
+  const raw = String(value || '');
+  if (!raw || raw.length > 2048) throw new Error('PUSH_ENDPOINT_INVALID');
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error('PUSH_ENDPOINT_INVALID'); }
+  const host = url.hostname.toLowerCase();
+  const allowedHost = host === 'fcm.googleapis.com'
+    || host === 'web.push.apple.com'
+    || host.endsWith('.push.services.mozilla.com')
+    || host.endsWith('.notify.windows.com');
+  if (url.protocol !== 'https:' || !allowedHost || url.username || url.password
+    || (url.port && url.port !== '443') || url.hash) {
+    throw new Error('PUSH_ENDPOINT_INVALID');
+  }
+  return url.toString();
+}
+
+function actionRateGroup(action: string): 'letter_list' | 'read' | 'write' | 'security' {
+  if (action === 'list') return 'letter_list';
+  if (['dashboard', 'get', 'notifications', 'notification:read', 'settings:get', 'push:config', 'sessions'].includes(action)) return 'read';
+  if (['purge', 'session:revoke', 'push:subscribe', 'push:unsubscribe'].includes(action)) return 'security';
+  return 'write';
+}
+
+async function dispatchPushForLetter(letterId: string | null, recipientId: string | null) {
+  if (!letterId || !recipientId) return;
+  let config: VapidConfig | null;
+  try { config = vapidConfig(); } catch { console.error('push configuration invalid'); return; }
+  if (!config) return;
+
+  const notification = await selectOne<Record<string, unknown>>('notifications', {
+    select: 'id,user_id,letter_id,notification_type',
+    user_id: `eq.${recipientId}`, letter_id: `eq.${letterId}`,
+    notification_type: 'in.(letter_received,letter_reply_received)',
+    order: 'created_at.desc', limit: '1'
+  });
+  if (!notification) return;
+
+  const subscriptions = await selectRows<Record<string, unknown>>('push_subscriptions', {
+    select: 'id,session_id,endpoint,p256dh,auth', user_id: `eq.${recipientId}`, limit: '20'
+  });
+  if (!subscriptions.length) return;
+
+  webPush.setVapidDetails(config.subject, config.publicKey, config.privateKey);
+  const now = nowIso();
+  for (const subscription of subscriptions) {
+    const sessionId = String(subscription.session_id || '');
+    const activeSession = await selectOne<Record<string, unknown>>('user_sessions', {
+      select: 'id', id: `eq.${sessionId}`, user_id: `eq.${recipientId}`, revoked_at: 'is.null',
+      idle_expires_at: `gt.${now}`, absolute_expires_at: `gt.${now}`
+    });
+    if (!activeSession) {
+      await dbRequest(`push_subscriptions?id=eq.${encodeURIComponent(String(subscription.id))}&user_id=eq.${encodeURIComponent(recipientId)}`, {
+        method: 'DELETE', headers: { Prefer: 'return=minimal' }
+      });
+      continue;
+    }
+
+    const claim = await rpc<Record<string, unknown>>('claim_app_push_delivery', {
+      p_notification_id: notification.id, p_subscription_id: subscription.id, p_now: nowIso()
+    });
+    if (claim.claimed !== true) continue;
+
+    try {
+      const result = await webPush.sendNotification({
+        endpoint: String(subscription.endpoint),
+        keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) }
+      }, JSON.stringify({
+        title: 'Tienes una nueva carta',
+        body: 'Abre Nuestro Rincón para leerla.',
+        url: './#/notifications'
+      }), { TTL: 60, urgency: 'high' });
+      await patchRows('push_delivery_attempts', { id: `eq.${claim.attempt_id}` }, {
+        status: 'sent', http_status: Number(result.statusCode || 201), attempted_at: nowIso()
+      });
+    } catch (error) {
+      const statusCode = Number((error as { statusCode?: number })?.statusCode || 0);
+      if (statusCode === 404 || statusCode === 410) {
+        await dbRequest(`push_subscriptions?id=eq.${encodeURIComponent(String(subscription.id))}&user_id=eq.${encodeURIComponent(recipientId)}`, {
+          method: 'DELETE', headers: { Prefer: 'return=minimal' }
+        });
+        await patchRows('push_delivery_attempts', { id: `eq.${claim.attempt_id}` }, {
+          status: 'gone', http_status: statusCode, attempted_at: nowIso()
+        });
+      } else {
+        await patchRows('push_delivery_attempts', { id: `eq.${claim.attempt_id}` }, {
+          status: 'failed', http_status: statusCode >= 100 && statusCode <= 599 ? statusCode : null,
+          attempted_at: nowIso()
+        });
+      }
+      // Nunca se registran el endpoint, las claves de suscripción o datos de la carta.
+      console.error('push delivery failed', statusCode || 'network_error');
+    }
+  }
+}
 
 // Contratos explícitos de los RPC: no se permite propagar `unknown` hasta el
 // acceso a propiedades ni asumir silenciosamente la forma de una respuesta.
@@ -432,6 +546,38 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       await patchRows('notifications', { id: `eq.${id}`, user_id: `eq.${userId}`, read_at: 'is.null' }, { read_at: nowIso() });
       return { status: 'read' };
     }
+    case 'push:config': {
+      const config = vapidConfig();
+      const current = await selectOne<Record<string, unknown>>('push_subscriptions', {
+        select: 'id', user_id: `eq.${userId}`, session_id: `eq.${session.sessionId}`, limit: '1'
+      });
+      return { enabled: Boolean(config), publicKey: config?.publicKey || null, subscribed: Boolean(current) };
+    }
+    case 'push:subscribe': {
+      const subscription = body.subscription;
+      if (!isRecord(subscription) || !isRecord(subscription.keys)) throw new Error('PUSH_SUBSCRIPTION_INVALID');
+      const endpoint = parsePushEndpoint(subscription.endpoint);
+      const p256dh = String(subscription.keys.p256dh || '');
+      const auth = String(subscription.keys.auth || '');
+      if (!/^[A-Za-z0-9_-]{40,200}$/.test(p256dh) || !/^[A-Za-z0-9_-]{12,100}$/.test(auth)) {
+        throw new Error('PUSH_SUBSCRIPTION_INVALID');
+      }
+      const result = await rpc<Record<string, unknown>>('upsert_app_push_subscription', {
+        p_user_id: userId, p_session_id: session.sessionId,
+        p_endpoint_hash: await sha256Hex(endpoint), p_endpoint: endpoint,
+        p_p256dh: p256dh, p_auth: auth,
+        p_user_agent: String(body.userAgent || '').slice(0, 500), p_now: nowIso()
+      });
+      if (result.status !== 'subscribed') throw new Error('PUSH_SUBSCRIPTION_FAILED');
+      return { status: 'subscribed' };
+    }
+    case 'push:unsubscribe': {
+      const endpoint = parsePushEndpoint(body.endpoint);
+      await dbRequest(`push_subscriptions?endpoint_hash=eq.${encodeURIComponent(await sha256Hex(endpoint))}&user_id=eq.${encodeURIComponent(userId)}&session_id=eq.${encodeURIComponent(session.sessionId)}`, {
+        method: 'DELETE', headers: { Prefer: 'return=minimal' }
+      });
+      return { status: 'unsubscribed' };
+    }
     case 'settings:get': {
       let settings = await selectOne<Record<string,unknown>>('user_settings', { select: 'user_id,theme,locale,time_zone,in_app_notifications_enabled', user_id: `eq.${userId}` });
       if (!settings) {
@@ -475,6 +621,7 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       if (!target) throw new Error('SESSION_NOT_FOUND');
       await patchRows('user_sessions', { id: `eq.${id}`, user_id: `eq.${userId}` }, { revoked_at: nowIso(), revocation_reason: 'user_revoked' });
       await patchRows('user_session_refresh_tokens', { session_id: `eq.${id}` }, { revoked_at: nowIso() });
+      await dbRequest(`push_subscriptions?session_id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
       return { status: 'revoked' };
     }
     default: throw new Error('UNKNOWN_ACTION');
@@ -492,7 +639,34 @@ Deno.serve(async (req: Request) => {
   try {
     const body = await readJson(req);
     const session = await requireSession(req);
-    const result = await handleAction(String(body.action || ''), body, session);
+    const action = String(body.action || '');
+    const rate = await rpc<Record<string, unknown>>('consume_app_api_rate_limit', {
+      p_user_id: session.userId, p_session_id: session.sessionId,
+      p_action_group: actionRateGroup(action), p_now: nowIso()
+    });
+    if (rate.allowed !== true) {
+      const retryAfter = Math.max(1, Number(rate.retry_after_seconds || 60));
+      headers.set('Retry-After', String(retryAfter));
+      return jsonResponse(req, { ok: false, code: 'RATE_LIMITED', retryAfterSeconds: retryAfter, message: 'Demasiadas solicitudes. Espera un momento y vuelve a intentarlo.' }, 429, headers);
+    }
+    const result = await handleAction(action, body, session);
+    if ((action === 'draft:send' || action === 'reply') && isRecord(result) && isRecord(result.letter)) {
+      const successfulSend = action === 'draft:send'
+        ? ['sent', 'already_sent'].includes(String(result.status))
+        : String(result.status) === 'created';
+      if (successfulSend) {
+        const letterId = typeof result.letter.id === 'string' ? result.letter.id : null;
+        const recipientId = typeof result.letter.recipient_id === 'string' ? result.letter.recipient_id : null;
+        const pushTask = dispatchPushForLetter(letterId, recipientId).catch(error => {
+          console.error('push dispatch failed', errorStatus(error).code);
+        });
+        const edgeRuntime = (globalThis as typeof globalThis & {
+          EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+        }).EdgeRuntime;
+        if (typeof edgeRuntime?.waitUntil === 'function') edgeRuntime.waitUntil(pushTask);
+        else await pushTask;
+      }
+    }
     return jsonResponse(req, { ok: true, ...((result && typeof result === 'object' && !Array.isArray(result)) ? result as Record<string,unknown> : { result }) }, 200, headers);
   } catch (error) {
     const message = error instanceof Error ? error.message : '';

@@ -8,7 +8,10 @@ Reducir el acoplamiento del controlador de entrada sin crear instancias paralela
 
 | Archivo | Responsabilidad |
 |---|---|
-| `app-controller.js` | Construcción del estado y la vista, inicialización, listeners globales, cambio de identidad, dispatch general de formularios/acciones y composición de módulos |
+| `app-controller.js` | Construcción de estado/vista, dependencias compartidas y composición de módulos; no contiene el arranque ni los listeners globales |
+| `app-initialization-controller.js` | Secuencia única de arranque: tema inicial, pantalla de carga, conexión de eventos y restauración de sesión |
+| `app-event-coordinator-controller.js` | Registro de listeners globales, accesibilidad responsive y delegación de `submit`/`click` a handlers especializados |
+| `session-lifecycle-controller.js` | Canal de revocación entre pestañas, restauración inicial y aislamiento/limpieza de estado privado al cambiar de identidad |
 | `auth-controller.js` | Traspaso seguro del código de recuperación, continuidad de registro/rotación, recuperación pendiente y cierre forzado de sesión |
 | `navigation-controller.js` | Resolución de rutas, precarga, caché de rutas, renderizado, paginación de carpetas, notificaciones y carga de mensajes anteriores |
 | `letter-controller.js` | Caché de hilos, apertura inmediata de cartas, marcado de lectura en segundo plano, edición, respuestas, envío, formato, vista previa y descargas |
@@ -16,9 +19,9 @@ Reducir el acoplamiento del controlador de entrada sin crear instancias paralela
 | `settings-controller.js` | Preferencias, temas, sesiones de dispositivos, verificación y renovación de la sesión propia |
 | `notification-controller.js` | Lectura y sincronización de la bandeja de notificaciones |
 
-Los módulos son clases sin constructor y no poseen estado duplicado. Sus métodos se instalan en `AppController.prototype` usando `Object.getOwnPropertyDescriptors`; esto es necesario porque los métodos de clase son no enumerables y un `Object.assign` simple no los copiaría. La prueba `controller-modularization.test.mjs` importa el controlador real y comprueba que los métodos compuestos están disponibles.
+Los controladores de dominio siguen siendo clases sin constructor y no poseen estado duplicado. Sus métodos se instalan en `AppController.prototype` usando `Object.getOwnPropertyDescriptors`; esto es necesario porque los métodos de clase son no enumerables y un `Object.assign` simple no los copiaría. Los handlers de evento y las vistas son funciones puras/delegadas que reciben el contexto de la instancia cuando necesitan acceso al estado. `controller-modularization.test.mjs` importa la clase real, verifica el contrato público y limita el tamaño del coordinador.
 
-En este snapshot, `app-controller.js` tiene 863 líneas; conserva el estado compartido, los listeners generales, el dispatch de acciones y el montaje de módulos. `draft-controller.js` se redujo a 286 líneas. La persistencia local se extrajo a `assets/js/services/draft-persistence-service.js` (109 líneas), que centraliza copias de emergencia, lectura/restauración de IndexedDB, hidratación del editor y persistencia al salir. La sincronización remota permanece en su servicio/cola independiente. La modularización es progresiva: no se considera terminado el controlador principal.
+En v25, `app-controller.js` queda en aproximadamente 80 líneas y se concentra en crear el estado compartido, inicializar dependencias y componer prototipos. `init()` vive en `app-initialization-controller.js`; los listeners y la coordinación responsive están en `app-event-coordinator-controller.js`; y la recuperación de sesión, revocación entre pestañas y limpieza de identidad se aíslan en `session-lifecycle-controller.js`. Los despachos `onSubmit` y `onClick` delegan en `app-submit-handler.js` y `app-click-handler.js` usando `.call(this, event)`, de modo que ambos reciben la misma instancia coordinadora y el mismo estado. Los handlers mantienen la lógica de acciones fuera del controlador principal. `app-view.js` queda como una fachada de aproximadamente 100 líneas; los fragmentos de interfaz se separan en `auth-view.js`, `correspondence-view.js` y `settings-view.js`. `draft-controller.js` mantiene su coordinación del editor, y la persistencia local sigue en `draft-persistence-service.js`. La persistencia local vive en `assets/js/services/draft-persistence-service.js` y centraliza copias de emergencia, lectura/restauración de IndexedDB, hidratación del editor y persistencia al salir. La sincronización remota permanece en su servicio/cola independiente. El CSS principal también se dividió manteniendo el orden de cascada: `app.css`, `app-components.css` y `app-auth.css`; `index.html`, el auditor de contraste y las pruebas leen el bundle en el mismo orden. No se ha cambiado el mecanismo de carga a un bundler: GitHub Pages sigue sirviendo hojas de estilo y módulos estáticos.
 
 ## Servicios independientes
 
@@ -58,7 +61,8 @@ La migración `20261120235900_transactional_profile_rename.sql` es local y está
 - `npm run check`: comprueba estructura, sintaxis ES Modules, imports locales y contratos estáticos.
 - `npm test`: incluye pruebas del descriptor composition, serialización de la cola, visibilidad/actividad/backoff del poller y uso del RPC de perfil.
 - `npm run build:pages`: genera la web estática para GitHub Pages.
-- `npm run check:contrast`: revisa 22 pares de color seleccionados en ambos temas.
+- `npm run check:contrast`: revisa 24 combinaciones de color seleccionadas en ambos temas.
+- `npm run test:coverage`: repite las pruebas con el instrumentador nativo de Node, limita la medición a `assets/js/**/*.js` y genera LCOV. El umbral inicial es 25 % líneas, 35 % funciones y 55 % ramas; es una línea base para elevarse progresivamente, no una afirmación de cobertura completa.
 - `npm run test:a11y`: ejecuta axe-core y geometría del pie del editor en Chromium, después de `npm ci` y de instalar Chromium.
 - `npm run check:edge`: ejecuta `deno check` en el workflow de GitHub Actions; el entorno local que produjo este paquete no tenía Deno instalado, así que se ejecutó además una comprobación estricta equivalente con `tsc` sobre las Edge Functions.
 

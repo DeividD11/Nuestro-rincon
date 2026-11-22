@@ -4,10 +4,11 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const css = [
-  await readFile(resolve(root, 'assets/css/app.css'), 'utf8'),
-  await readFile(resolve(root, 'assets/css/accessibility.css'), 'utf8')
-].join('\n');
+const css = await Promise.all([
+  'app.css', 'app-components.css', 'app-auth.css',
+  'editor.css', 'dialogs.css', 'security-panels.css',
+  'correspondence.css', 'accessibility.css', 'recovery.css'
+].map(file => readFile(resolve(root, 'assets/css', file), 'utf8'))).then(parts => parts.join('\n'));
 
 function parseDeclarations(block) {
   const values = {};

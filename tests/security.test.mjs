@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
@@ -48,7 +49,7 @@ test('la migración elimina el acceso público y reserva RPC/tablas al backend',
 
 test('las cartas enviadas incluyen la marca de lectura registrada para el destinatario', async () => {
   const letters = await read('../supabase/functions/letters-api/index.ts');
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(letters, /async function recipientStatesFor\(rows: Record<string, unknown>\[\]\)/);
   assert.match(letters, /readByRecipientAt: recipientState\?\.read_at/);
   assert.match(letters, /recipientStatesFor\(threadRows\)/);
@@ -112,7 +113,7 @@ test('la sesión renueva actividad como máximo una vez por minuto y en paralelo
 test('el registro exige un código privado y el backend consume la invitación en la misma transacción', async () => {
   const auth = await read('../supabase/functions/auth-api/index.ts');
   const core = await read('../supabase/functions/_shared/core.ts');
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   const migration = await read('../supabase/migrations/20261118203751_private_registration_invitations.sql');
   assert.match(view, /name="invitationCode"[^>]*required/);

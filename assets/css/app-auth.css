@@ -1,0 +1,53 @@
+/* Acceso y recuperación: la misma identidad visual que el espacio privado. */
+.auth-page {
+  align-items: stretch;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(255,255,255,.72), transparent 30%),
+    linear-gradient(135deg, #eee1d6 0%, #f8f3ec 52%, #efe4da 100%);
+}
+.auth-story {
+  padding: clamp(30px, 6.5vw, 92px);
+  background: radial-gradient(ellipse at 80% 72%, rgba(211,174,155,.18), transparent 34%);
+}
+.auth-story:after { color: rgba(153, 105, 87, .11); font-size: clamp(130px, 13vw, 190px); }
+.story-copy { margin-block: clamp(48px, 8vh, 92px); }
+.story-copy h1 { text-wrap: balance; }
+.story-copy p { line-height: 1.85; }
+.brand-tagline { letter-spacing: .13em; }
+.auth-panel-wrap {
+  background: rgba(255, 253, 249, .28);
+  padding: clamp(20px, 4vw, 52px);
+}
+.auth-card {
+  border-color: rgba(255,255,255,.8);
+  box-shadow: 0 22px 58px rgba(78, 53, 41, .11), 0 2px 8px rgba(78, 53, 41, .025);
+}
+.auth-card h2 { letter-spacing: -.025em; text-wrap: balance; }
+.auth-card > p { font-size: 13px; line-height: 1.7; }
+.auth-switch { line-height: 2; }
+.recovery-list { max-width: 100%; overflow-wrap: anywhere; }
+html[data-theme="dark"] .auth-page {
+  background: radial-gradient(circle at 8% 10%, rgba(213,161,143,.08), transparent 30%), linear-gradient(135deg, #211e1c, #292320 55%, #1b1918);
+}
+html[data-theme="dark"] .auth-story { background: radial-gradient(ellipse at 80% 72%, rgba(213,161,143,.07), transparent 34%); }
+html[data-theme="dark"] .auth-panel-wrap { background: rgba(12, 11, 10, .12); }
+html[data-theme="dark"] .auth-card { border-color: #4b4039; box-shadow: 0 22px 58px rgba(0,0,0,.3); }
+
+@media (max-width: 720px) {
+  .auth-page { min-height: 100svh; padding-bottom: env(safe-area-inset-bottom); }
+  .auth-story { padding: 22px 20px 0; background: radial-gradient(ellipse at 85% 70%, rgba(211,174,155,.16), transparent 38%); }
+  .story-copy { margin: 27px 0 12px; }
+  .story-copy h1 { margin: 12px 0 10px; font-size: clamp(33px, 9vw, 43px); }
+  .story-copy p { max-width: 54ch; margin: 0; font-size: 12px; line-height: 1.7; }
+  .auth-panel-wrap { display: block; padding: 16px 15px calc(24px + env(safe-area-inset-bottom)); background: transparent; }
+  .auth-card { width: 100%; max-width: 480px; margin-inline: auto; border-radius: 20px; padding: clamp(19px, 5.2vw, 26px); }
+  .auth-card h2 { font-size: clamp(25px, 7vw, 30px); }
+}
+@media (max-width: 360px) {
+  .auth-story { padding-inline: 16px; }
+  .story-copy h1 { font-size: 32px; }
+  .auth-panel-wrap { padding-inline: 10px; }
+  .auth-card { padding: 17px; border-radius: 17px; }
+  .auth-card h2 { font-size: 25px; }
+  .recovery-list { padding: 10px; font-size: 11px; }
+}

@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 
 const stylesheetFiles = [
   'app.css',
+  'app-components.css',
+  'app-auth.css',
   'editor.css',
   'dialogs.css',
   'security-panels.css',

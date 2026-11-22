@@ -4,6 +4,8 @@ project_id = "tiqbmuubpbmxqvtkcdhq"
 # aleatorios de sesión consultando sus hashes y vencimientos en PostgreSQL.
 [functions.auth-api]
 verify_jwt = false
+import_map = "./functions/auth-api/deno.json"
 
 [functions.letters-api]
 verify_jwt = false
+import_map = "./functions/letters-api/deno.json"

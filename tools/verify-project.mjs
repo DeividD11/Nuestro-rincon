@@ -6,11 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
-  'index.html', '404.html', '.nojekyll',
-  'assets/css/app.css', 'assets/css/editor.css', 'assets/css/dialogs.css', 'assets/css/security-panels.css', 'assets/css/correspondence.css', 'assets/css/accessibility.css', 'assets/css/recovery.css', 'assets/icons/mark.svg',
+  'index.html', '404.html', '.nojekyll', 'manifest.webmanifest', 'service-worker.js',
+  'assets/css/app.css', 'assets/css/app-components.css', 'assets/css/app-auth.css', 'assets/css/editor.css', 'assets/css/dialogs.css', 'assets/css/security-panels.css', 'assets/css/correspondence.css', 'assets/css/accessibility.css', 'assets/css/recovery.css', 'assets/icons/mark.svg',
   'assets/js/app.js', 'assets/js/config/app-config.js',
-  'assets/js/models/app-state.js', 'assets/js/views/app-view.js',
-  'assets/js/controllers/app-controller.js',
+  'assets/js/models/app-state.js', 'assets/js/views/app-view.js', 'assets/js/views/auth-view.js', 'assets/js/views/correspondence-view.js', 'assets/js/views/settings-view.js',
+  'assets/js/controllers/app-controller.js', 'assets/js/controllers/app-submit-handler.js', 'assets/js/controllers/app-click-handler.js', 'assets/js/controllers/app-initialization-controller.js', 'assets/js/controllers/app-event-coordinator-controller.js', 'assets/js/controllers/session-lifecycle-controller.js',
   'assets/js/controllers/auth-controller.js',
   'assets/js/controllers/navigation-controller.js',
   'assets/js/controllers/letter-controller.js',
@@ -22,8 +22,8 @@ const required = [
   'assets/js/services/local-drafts.js', 'assets/js/services/recovery-handoff.js',
   'assets/js/services/recovery-vault.js',
   'assets/js/services/draft-sync-queue.js', 'assets/js/services/draft-sync-service.js', 'assets/js/services/draft-persistence-service.js', 'assets/js/services/adaptive-poller.js', 'assets/js/utils/dom.js',
-  'tests/helpers/controller-source.mjs', 'tests/controller-modularization.test.mjs', 'tests/e2e/accessibility.spec.mjs',
-  'tests/accessibility-release.test.mjs', 'tests/backup-account-recovery.test.mjs', 'scripts/package-zip.mjs', 'tools/contrast-audit.mjs', 'package-lock.json', '.nvmrc',
+  'tests/helpers/controller-source.mjs', 'tests/controller-modularization.test.mjs', 'tests/e2e/accessibility.spec.mjs', 'tests/ci-hardening.test.mjs', 'tests/search-optimization.test.mjs',
+  'tests/accessibility-release.test.mjs', 'tests/backup-account-recovery.test.mjs', 'tests/package-distribution.test.mjs', 'tests/documentation-integrity.test.mjs', 'scripts/package-zip.mjs', 'tools/contrast-audit.mjs', 'package-lock.json', '.nvmrc',
   'scripts/backup/create-backup.sh', 'scripts/backup/restore-to-isolated.sh', 'scripts/run-db-tests.mjs',
   'docs/BACKUP_RESTORE.md', 'docs/ACCOUNT_RECOVERY.md',
   'docs/ACCESSIBILITY.md', 'docs/PUSH_NOTIFICATIONS_ROADMAP.md', 'docs/CI_RELEASE_POLICY.md', 'docs/PAGINATION.md', 'docs/CONTROLLER_ARCHITECTURE.md',
@@ -48,15 +48,16 @@ const required = [
   'supabase/migrations/20261120235900_transactional_profile_rename.sql',
   'supabase/migrations/20261121200000_recovery_code_bundles.sql',
   'supabase/migrations/20261121210000_cursor_based_letter_pagination.sql',
-  'supabase/tests/cursor_pagination.test.sql',
+  'supabase/migrations/20261121220000_authenticated_api_rate_limits_and_web_push.sql',
+  'supabase/tests/cursor_pagination.test.sql', 'supabase/tests/api_rate_limits_and_push.test.sql',
   'supabase/tests/recovery_code_bundles.test.sql', 'supabase/tests/cursor_pagination.test.sql',
   'supabase/tests/auth_rate_limits.test.sql', 'supabase/tests/shared_letter_purge.test.sql',
-  'supabase/tests/profile_rename_transaction.test.sql',
-  'scripts/run-db-tests.mjs', 'docs/LETTERS_CONSISTENCY.md', 'docs/E2EE_ARCHITECTURE.md', 'docs/CONTROLLER_ARCHITECTURE.md',
+  'supabase/tests/profile_rename_transaction.test.sql', 'supabase/tests/search_semantics.test.sql',
+  'scripts/run-db-tests.mjs', 'tools/run-coverage.mjs', 'supabase/performance/search-trigram-candidate.sql', 'supabase/performance/search-benchmark.sql', 'supabase/tests/search_semantics.test.sql', 'docs/GITHUB_BRANCH_PROTECTION.md', 'docs/LETTER_SEARCH_PERFORMANCE.md', 'docs/LETTERS_CONSISTENCY.md', 'docs/E2EE_ARCHITECTURE.md', 'docs/CONTROLLER_ARCHITECTURE.md',
   'assets/js/theme-boot.js',
   'docs/PAGINATION.md',
-  'supabase/functions/_shared/core.ts', 'supabase/functions/auth-api/index.ts',
-  'supabase/functions/letters-api/index.ts', 'supabase/functions/deno.json',
+  'supabase/functions/_shared/core.ts', 'supabase/functions/_shared/core.test.ts', 'supabase/functions/auth-api/index.ts',
+  'supabase/functions/letters-api/index.ts', 'supabase/functions/auth-api/deno.json', 'supabase/functions/letters-api/deno.json',
   'scripts/build-pages.mjs', 'docs/SECURITY.md', 'docs/REMOTE_BASELINE.md',
   'README.md', '.gitignore', '.github/workflows/pages.yml', '.github/workflows/security-playwright.yml',
   '.github/workflows/backup-database.yml', '.github/workflows/export-schema.yml'
@@ -103,7 +104,7 @@ for (const match of html.matchAll(/(?:src|href)=["']([^"']+)["']/g)) {
   catch { failures.push(`Recurso local referenciado desde index.html inexistente: ${target}`); }
 }
 
-const frontendFiles = [join(root, 'index.html'), join(root, '404.html'), ...await walk(join(root, 'assets'))];
+const frontendFiles = [join(root, 'index.html'), join(root, '404.html'), join(root, 'manifest.webmanifest'), join(root, 'service-worker.js'), ...await walk(join(root, 'assets'))];
 for (const file of frontendFiles) {
   const ext = extname(file).toLowerCase();
   if (!['.html', '.js', '.css', '.svg', '.json', '.webmanifest'].includes(ext)) continue;
@@ -119,7 +120,7 @@ const auth = await readFile(join(root, 'supabase/functions/auth-api/index.ts'), 
 const letters = await readFile(join(root, 'supabase/functions/letters-api/index.ts'), 'utf8');
 const core = await readFile(join(root, 'supabase/functions/_shared/core.ts'), 'utf8');
 const authSql = await readFile(join(root, 'supabase/migrations/20261116055118_opaque_sessions_local_recovery.sql'), 'utf8');
-const authView = await readFile(join(root, 'assets/js/views/app-view.js'), 'utf8');
+const authView = (await Promise.all(['app-view.js','auth-view.js','correspondence-view.js','settings-view.js'].map(name => readFile(join(root, 'assets/js/views', name), 'utf8')))).join('\n');
 if (!/access_token_hash/.test(core) || !/access_expires_at/.test(core) || !/sha256Hex\(token\)/.test(core)) {
   failures.push('No se detectó validación de token opaco almacenado como hash.');
 }
@@ -153,7 +154,7 @@ if (!/resumeRegistrationFromReceipt/.test(auth) || !/verifyPassword\(password/.t
   failures.push('auth-api debe reanudar altas idempotentes, separar cuenta/sesión y permitir rotar el código con contraseña actual.');
 }
 const recoverySessionService = await readFile(join(root, 'assets/js/services/session-service.js'), 'utf8');
-const recoveryController = await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/auth-controller.js'), 'utf8');
+const recoveryController = (await Promise.all(['app-controller.js','app-submit-handler.js','app-click-handler.js','app-initialization-controller.js','app-event-coordinator-controller.js','session-lifecycle-controller.js','auth-controller.js'].map(name => readFile(join(root, 'assets/js/controllers', name), 'utf8')))).join('\n');
 if (!/payload\.authenticated === true && payload\.accessToken && payload\.refreshToken/.test(recoverySessionService)
   || !/createPendingRegistration/.test(recoveryController) || !/isUncertainRequestError/.test(recoveryController)
   || !/id="recovery-code-form"/.test(authView)) {
@@ -162,7 +163,7 @@ if (!/payload\.authenticated === true && payload\.accessToken && payload\.refres
 if (!/name="invitationCode"[\s\S]*required/.test(authView)) {
   failures.push('El formulario de registro debe solicitar el código de invitación.');
 }
-const controller = await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/navigation-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/letter-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/draft-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/settings-controller.js'), 'utf8') + await readFile(join(root, 'assets/js/controllers/notification-controller.js'), 'utf8');
+const controller = (await Promise.all(['app-controller.js','app-submit-handler.js','app-click-handler.js','app-initialization-controller.js','app-event-coordinator-controller.js','session-lifecycle-controller.js','navigation-controller.js','letter-controller.js','draft-controller.js','settings-controller.js','notification-controller.js'].map(name => readFile(join(root, 'assets/js/controllers', name), 'utf8')))).join('\n');
 if (!/requireSession\(req\)/.test(letters)) failures.push('letters-api no exige sesión propia.');
 const consistencyMigration = await readFile(join(root, 'supabase/migrations/20261119090000_shared_letter_purge_and_reply_guard.sql'), 'utf8');
 const sharedPurgeTest = await readFile(join(root, 'supabase/tests/shared_letter_purge.test.sql'), 'utf8');
@@ -190,7 +191,8 @@ if (!/rpc<unknown>\('rename_app_profile'/.test(letters) || /Promise\.all/.test(l
 const draftQueue = await readFile(join(root, 'assets/js/services/draft-sync-queue.js'), 'utf8');
 const poller = await readFile(join(root, 'assets/js/services/adaptive-poller.js'), 'utf8');
 if (!/new DraftSyncQueue\(\)/.test(await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8')) || !/draftSyncQueue\.enqueue/.test(await readFile(join(root, 'assets/js/controllers/draft-controller.js'), 'utf8')) || !/120_000/.test(poller) || !/600_000/.test(poller) || !/visibilitychange/.test(poller) || !/failures/.test(poller) || !/2 \* 60_000/.test(await readFile(join(root, 'assets/js/controllers/notification-controller.js'), 'utf8')) || !/15 \* 60_000/.test(await readFile(join(root, 'assets/js/controllers/settings-controller.js'), 'utf8'))) failures.push('La cola de borradores o el poller adaptativo no está implementado correctamente.');
-if ((await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8')).split('\n').length > 900) failures.push('app-controller.js sigue concentrando demasiadas responsabilidades.');
+if ((await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8')).split('\n').length > 350) failures.push('app-controller.js sigue concentrando demasiadas responsabilidades.');
+if ((await readFile(join(root, 'assets/js/views/app-view.js'), 'utf8')).split('\n').length > 150) failures.push('app-view.js debe delegar los fragmentos de interfaz a vistas por sección.');
 if (!/pg_advisory_xact_lock[\s\S]*v_account_count >= 2/i.test(authSql)) failures.push('El alta no garantiza concurrencia y límite de dos cuentas.');
 if (!/revoke execute[\s\S]*from public, anon, authenticated/i.test(authSql) || !/grant execute[\s\S]*to service_role/i.test(authSql)) {
   failures.push('El RPC de registro no está reservado a service_role.');
@@ -220,11 +222,15 @@ if (!/^deno check --config=/m.test(packageJson.scripts['check:edge'] || '')
 const workflow = await readFile(join(root, '.github/workflows/pages.yml'), 'utf8');
 const packageLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
 if (packageLock.lockfileVersion !== 3 || packageLock.packages?.['']?.devDependencies?.['axe-core'] !== packageJson.devDependencies?.['axe-core'] || packageLock.packages?.['']?.devDependencies?.['@playwright/test'] !== packageJson.devDependencies?.['@playwright/test']) failures.push('package-lock.json no corresponde a las dependencias exactas de package.json.');
+const lockIntegrityMissing = Object.entries(packageLock.packages || {}).filter(([, entry]) => entry.resolved && !entry.integrity);
+if (lockIntegrityMissing.length || packageLock.packages?.['node_modules/axe-core']?.version !== '4.14.1' || !/^sha512-/.test(packageLock.packages?.['node_modules/axe-core']?.integrity || '')) failures.push('package-lock.json debe fijar integridad de todos los paquetes descargados, incluido axe-core.');
+if (packageJson.packageManager !== 'npm@11.19.1' || !/npm install --global npm@11\.19\.1/.test(workflow) || !/npm run test:coverage/.test(workflow)) failures.push('CI debe fijar npm 11.19.1 y aplicar el umbral de cobertura frontend.');
 if (!/npm ci/.test(workflow) || !/npm run check:contrast/.test(workflow) || !/npm run test:a11y/.test(workflow)) failures.push('El workflow de Pages debe instalar desde lockfile y ejecutar contraste y axe antes de desplegar.');
-if (!/actions\/configure-pages@v6/.test(workflow) || /static_site_generator:\s*custom/.test(workflow)) {
-  failures.push('GitHub Pages debe usar configure-pages v6 sin el generador custom no compatible.');
+if (!/actions\/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10/.test(workflow) || !/actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/.test(workflow) || !/actions\/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f/.test(workflow) || !/actions\/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53/.test(workflow) || !/actions\/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e/.test(workflow)) failures.push('Las GitHub Actions deben usar las referencias SHA completas verificadas.');
+if (!/actions\/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d/.test(workflow) || /static_site_generator:\s*custom/.test(workflow)) {
+  failures.push('GitHub Pages debe fijar configure-pages por SHA y no usar el generador custom no compatible.');
 }
-if (!/npm run check/.test(workflow) || !/npm run check:edge/.test(workflow) || !/denoland\/setup-deno@v2/.test(workflow) || !/npm test/.test(workflow) || !/npm run build:pages/.test(workflow) || !/path: \.\/_site/.test(workflow)) {
+if (!/npm run check/.test(workflow) || !/npm run check:edge/.test(workflow) || !/denoland\/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed/.test(workflow) || !/npm test/.test(workflow) || !/npm run test:coverage/.test(workflow) || !/npm run build:pages/.test(workflow) || !/path: \.\/_site/.test(workflow)) {
   failures.push('El workflow debe verificar el proyecto, ejecutar pruebas y publicar _site.');
 }
 if (!/showConfirmDialog/.test(controller) || /\b(?:window\.)?confirm\s*\(/.test(controller)) {
@@ -236,14 +242,14 @@ if (await access(join(root, 'public')).then(() => true).catch(() => false)) {
 
 
 const accessibilityHtml = await readFile(join(root, 'index.html'), 'utf8');
-const cssOrder = ['app.css','editor.css','dialogs.css','security-panels.css','correspondence.css','accessibility.css','recovery.css'];
+const cssOrder = ['app.css','app-components.css','app-auth.css','editor.css','dialogs.css','security-panels.css','correspondence.css','accessibility.css','recovery.css'];
 const cssPositions = cssOrder.map(file => accessibilityHtml.indexOf(`./assets/css/${file}`));
 if (cssPositions.some(position => position < 0) || cssPositions.some((position, index) => index > 0 && position <= cssPositions[index - 1])) {
   failures.push('Las hojas CSS modulares deben cargarse en orden de cascada estable.');
 }
 
-const accessibilityView = await readFile(join(root, 'assets/js/views/app-view.js'), 'utf8');
-const accessibilityController = await readFile(join(root, 'assets/js/controllers/app-controller.js'), 'utf8');
+const accessibilityView = (await Promise.all(['app-view.js','auth-view.js','correspondence-view.js','settings-view.js'].map(name => readFile(join(root, 'assets/js/views', name), 'utf8')))).join('\n');
+const accessibilityController = await readFile(join(root, 'assets/js/controllers/app-event-coordinator-controller.js'), 'utf8');
 const accessibilityDom = await readFile(join(root, 'assets/js/utils/dom.js'), 'utf8');
 if (/<div\s+id="app"[^>]*aria-live=/i.test(accessibilityHtml)
   || !/id="app-announcer"[^>]*role="status"[^>]*aria-live="polite"/.test(accessibilityHtml)
@@ -270,7 +276,7 @@ const restoreScript = await readFile(join(root, 'scripts/backup/restore-to-isola
 const backupWorkflow = await readFile(join(root, '.github/workflows/backup-database.yml'), 'utf8');
 const recoveryMigration = await readFile(join(root, 'supabase/migrations/20261121200000_recovery_code_bundles.sql'), 'utf8');
 const recoveryApi = await readFile(join(root, 'supabase/functions/auth-api/index.ts'), 'utf8');
-if (!/supabase db dump --db-url/.test(backupScript) || !/age -r/.test(backupScript)
+if (!/supabase db dump --remote="\$NR_BACKUP_DATABASE_URL"/.test(backupScript) || !/age -r/.test(backupScript)
   || !/aws s3 cp/.test(backupScript) || !/sha256sum/.test(backupScript)
   || !/rowCounts/.test(backupScript) || !/monthly/.test(backupScript)
   || /upload-artifact/.test(backupWorkflow)) {

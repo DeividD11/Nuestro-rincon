@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -6,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('el saludo utiliza una ilustración adaptable sin depender de un glifo de fuente', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const css = await readCssBundle();
   const start = view.indexOf('class="greeting-card"');
   const end = view.indexOf('</section>', start);

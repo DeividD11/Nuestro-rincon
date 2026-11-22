@@ -7,7 +7,7 @@ El proyecto `tiqbmuubpbmxqvtkcdhq` ya existe y tiene historial, datos y funcione
 Con Supabase CLI v3 y una URL PostgreSQL privada del proyecto, desde un entorno seguro:
 
 ```bash
-supabase db dump --db-url "$NR_SCHEMA_SOURCE_DATABASE_URL" --schema public --file supabase/schema/remote-public.sql
+supabase db dump --remote="$NR_SCHEMA_SOURCE_DATABASE_URL" --schema public --file supabase/schema/remote-public.sql
 ```
 
 El dump estándar exporta el esquema, no los datos ni los roles personalizados, y excluye esquemas administrados por Supabase y extensiones. Revisa el resultado y las ACL/default privileges antes de restaurarlo en un proyecto nuevo. No uses un dump de esquema como copia de datos.

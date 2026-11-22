@@ -1,5 +1,6 @@
 import { readPendingRecovery } from '../services/recovery-handoff.js';
 import { AdaptivePoller } from '../services/adaptive-poller.js';
+import { showToast } from '../utils/dom.js';
 
 export class SettingsController {
     themeStorageKey() {
@@ -48,8 +49,90 @@ export class SettingsController {
         this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
         this.cacheTheme(this.state.settings.theme);
         this.applyTheme(this.state.settings.theme);
+        this.loadPushStatus().catch(() => {});
         if (this.state.route === 'settings') this.render();
       } catch { /* Un fallo de preferencias no debe bloquear el resto de la aplicación. */ }
+    }
+
+    async loadPushStatus() {
+      if (!this.session?.user) return;
+      const supported = Boolean(globalThis.isSecureContext
+        && 'serviceWorker' in navigator && 'PushManager' in globalThis && 'Notification' in globalThis);
+      const state = {
+        supported,
+        configured: false,
+        subscribed: false,
+        permission: supported ? Notification.permission : 'unsupported',
+        busy: false
+      };
+      if (!supported) {
+        this.state.pushNotifications = state;
+        if (this.state.route === 'settings') this.render();
+        return;
+      }
+      try {
+        const backend = await this.repository.pushConfig();
+        state.configured = backend.enabled === true && typeof backend.publicKey === 'string';
+        const scope = new URL('./', document.baseURI).pathname;
+        const registration = await navigator.serviceWorker.getRegistration(scope);
+        const subscription = await registration?.pushManager.getSubscription();
+        state.subscribed = Boolean(subscription && backend.subscribed === true);
+        state.browserSubscription = Boolean(subscription);
+        this.state.pushNotifications = state;
+      } catch {
+        state.configured = false;
+        state.error = true;
+        this.state.pushNotifications = state;
+      }
+      if (this.state.route === 'settings') this.render();
+    }
+
+    async enablePushNotifications() {
+      const current = this.state.pushNotifications || {};
+      if (!current.supported) throw new Error('Este navegador o dispositivo no admite notificaciones push en esta instalación.');
+      const backend = await this.repository.pushConfig();
+      if (backend.enabled !== true || !backend.publicKey) {
+        throw new Error('Las notificaciones externas todavía no están configuradas en el servidor.');
+      }
+
+      let permission = Notification.permission;
+      if (permission === 'default') permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('No se concedió permiso para mostrar notificaciones. Puedes activarlo en los ajustes del navegador.');
+
+      const scopeUrl = new URL('./', document.baseURI);
+      const workerUrl = new URL('./service-worker.js', document.baseURI);
+      const registration = await navigator.serviceWorker.register(workerUrl.href, { scope: scopeUrl.pathname, updateViaCache: 'none' });
+      await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        const padding = '='.repeat((4 - backend.publicKey.length % 4) % 4);
+        const binary = atob(backend.publicKey.replace(/-/g, '+').replace(/_/g, '/') + padding);
+        const applicationServerKey = Uint8Array.from(binary, character => character.charCodeAt(0));
+        subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+      }
+      await this.repository.subscribePush(subscription.toJSON());
+      this.state.pushNotifications = {
+        supported: true, configured: true, subscribed: true, browserSubscription: true,
+        permission: Notification.permission, busy: false
+      };
+      this.render();
+      showToast('Notificaciones externas activadas en este dispositivo.', 'success');
+    }
+
+    async disablePushNotifications() {
+      const scope = new URL('./', document.baseURI).pathname;
+      const registration = await navigator.serviceWorker.getRegistration(scope);
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        await this.repository.unsubscribePush(subscription.endpoint);
+        await subscription.unsubscribe();
+      }
+      this.state.pushNotifications = {
+        ...(this.state.pushNotifications || {}), subscribed: false, browserSubscription: false,
+        permission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
+      };
+      this.render();
+      showToast('Las notificaciones externas se desactivaron en este dispositivo.', 'success');
     }
 
     async refreshSessions() {

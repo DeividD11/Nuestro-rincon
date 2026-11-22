@@ -78,11 +78,16 @@ if (manifest?.format !== 'nuestro-rincon-logical-backup'
   || JSON.stringify(manifest?.components) !== JSON.stringify(requiredComponents)) {
   throw new Error('El manifiesto del respaldo no es compatible o está incompleto.');
 }
+if (manifest.migrationHistory !== undefined) {
+  if (!Array.isArray(manifest.migrationHistory) || manifest.migrationHistory.some(item =>
+    !/^\d{14}$/.test(String(item?.version || '')) || (item?.name !== null && item?.name !== undefined && (typeof item.name !== 'string' || item.name.length > 160))
+  )) throw new Error('El historial de migraciones del manifiesto no es válido.');
+}
 const counts = manifest.rowCounts;
 for (const key of ['app_users','letters','letter_threads','user_sessions','user_recovery_codes','notifications']) {
   if (!Number.isSafeInteger(counts?.[key]) || counts[key] < 0) throw new Error(`El manifiesto no contiene un recuento válido para ${key}.`);
 }
-process.stdout.write(JSON.stringify({projectRef:manifest.projectRef,rowCounts:counts}));
+process.stdout.write(JSON.stringify({projectRef:manifest.projectRef,rowCounts:counts,migrationHistoryCount:manifest.migrationHistory?.length ?? null}));
 NODE
 )"
 manifest_ref="$(NR_RESTORE_MANIFEST="$manifest_json" node --input-type=module -e "const m=JSON.parse(process.env.NR_RESTORE_MANIFEST); process.stdout.write(m.projectRef)")"

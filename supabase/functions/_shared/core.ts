@@ -5,6 +5,8 @@ const ACCESS_TTL_MS = 15 * 60 * 1000;
 const IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const ABSOLUTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PBKDF2_ITERATIONS = 600_000;
+const DB_REQUEST_TIMEOUT_MS = 12_000;
+const JSON_BODY_MAX_BYTES = 150_000;
 
 export type AppUser = {
   id: string;
@@ -136,8 +138,24 @@ export async function dbRequest<T = unknown>(path: string, init: RequestInit = {
   const headers = dbHeaders(init.headers || {});
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   headers.set('Cache-Control', 'no-store');
-  const response = await fetch(supabaseUrl(path), { ...init, headers, cache: 'no-store' });
-  const raw = await response.text();
+
+  const timeoutSignal = AbortSignal.timeout(DB_REQUEST_TIMEOUT_MS);
+  const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+  let response: Response;
+  try {
+    response = await fetch(supabaseUrl(path), { ...init, headers, signal, cache: 'no-store' });
+  } catch (error) {
+    if (timeoutSignal.aborted) throw new Error('DATABASE_TIMEOUT');
+    throw error;
+  }
+
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch (error) {
+    if (timeoutSignal.aborted) throw new Error('DATABASE_TIMEOUT');
+    throw error;
+  }
   let data: unknown = null;
   try { data = raw ? JSON.parse(raw) : null; } catch { data = raw; }
   if (!response.ok) {
@@ -298,11 +316,51 @@ export function jsonResponse(_req: Request, payload: Record<string, unknown>, st
 }
 
 export async function readJson(req: Request): Promise<Record<string, unknown>> {
-  const contentLength = Number(req.headers.get('content-length') || 0);
-  if (contentLength > 150_000) throw new Error('PAYLOAD_TOO_LARGE');
-  const text = await req.text();
-  if (text.length > 150_000) throw new Error('PAYLOAD_TOO_LARGE');
-  const parsed = text ? JSON.parse(text) : {};
+  const contentType = req.headers.get('content-type') || '';
+  if (!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/i.test(contentType.trim())) {
+    throw new Error('INVALID_CONTENT_TYPE');
+  }
+
+  const rawLength = req.headers.get('content-length');
+  if (rawLength !== null) {
+    if (!/^\d+$/.test(rawLength.trim())) throw new Error('INVALID_CONTENT_LENGTH');
+    if (Number(rawLength) > JSON_BODY_MAX_BYTES) throw new Error('PAYLOAD_TOO_LARGE');
+  }
+
+  if (!req.body) return {};
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > JSON_BODY_MAX_BYTES) {
+        try { await reader.cancel('PAYLOAD_TOO_LARGE'); } catch { /* El límite ya se alcanzó. */ }
+        throw new Error('PAYLOAD_TOO_LARGE');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* No retener el stream después de leerlo. */ }
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  let parsed: unknown;
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error('INVALID_JSON');
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_BODY');
   return parsed as Record<string, unknown>;
 }
@@ -366,8 +424,20 @@ export function errorStatus(error: unknown): { status: number; code: string; mes
     || code === 'RECOVERY_BUNDLE_INVALID' || code === 'CURRENT_PASSWORD_INVALID') {
     return { status: 400, code, message: 'Los datos de seguridad no son válidos. Comprueba la contraseña y vuelve a intentarlo.' };
   }
-  if (code === 'INVALID_BODY' || code === 'INVALID_INPUT') {
-    return { status: 400, code, message: 'Los datos enviados no son válidos.' };
+  if (code === 'INVALID_CONTENT_TYPE') {
+    return { status: 415, code, message: 'La solicitud debe utilizar el tipo de contenido application/json.' };
+  }
+  if (code === 'INVALID_JSON' || code === 'INVALID_CONTENT_LENGTH' || code === 'INVALID_BODY' || code === 'INVALID_INPUT') {
+    return { status: 400, code, message: 'El cuerpo JSON o los datos enviados no son válidos.' };
+  }
+  if (code === 'PUSH_ENDPOINT_INVALID' || code === 'PUSH_SUBSCRIPTION_INVALID') {
+    return { status: 400, code, message: 'La suscripción de notificaciones del navegador no es válida.' };
+  }
+  if (code === 'PUSH_VAPID_CONFIGURATION_INVALID') {
+    return { status: 503, code, message: 'El servicio de notificaciones externas no está configurado correctamente.' };
+  }
+  if (code === 'DATABASE_TIMEOUT') {
+    return { status: 504, code, message: 'La base de datos tardó demasiado en responder. Vuelve a intentarlo.' };
   }
   if (code.startsWith('DATABASE_')) {
     return { status: 500, code: 'DATABASE_ERROR', message: 'No se pudo completar la operación en la base de datos.' };

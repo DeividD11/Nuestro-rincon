@@ -44,6 +44,19 @@ async function post(functionName, action, payload = {}, accessToken = null) {
 const auth = (action, payload, token) => post('auth-api', action, payload, token);
 const letters = (action, payload, token) => post('letters-api', action, payload, token);
 
+async function postRaw(functionName, body, contentType = 'application/json', stream = false) {
+  const headers = { apikey: env.NR_TEST_PUBLISHABLE_KEY, 'Content-Type': contentType };
+  const requestBody = stream
+    ? new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); } })
+    : body;
+  const response = await fetch(`${env.NR_TEST_SUPABASE_URL.replace(/\/$/, '')}/functions/v1/${functionName}`, {
+    method: 'POST', headers, body: requestBody, ...(stream ? { duplex: 'half' } : {}), cache: 'no-store'
+  });
+  let data = {};
+  try { data = await response.json(); } catch { data = {}; }
+  return { status: response.status, data };
+}
+
 async function registerAccount({ invite, username, password, displayName }) {
   const code = recoveryCode();
   const requestId = randomUUID();
@@ -69,6 +82,20 @@ async function expectDenied(response, label) {
 
 test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !configured }, async () => {
   assertIsolatedTarget();
+
+  // El parser compartido se ejercita con peticiones HTTP reales antes de crear
+  // cuentas: JSON mal formado, media type incorrecto y stream sobredimensionado
+  // sin Content-Length (caso que no debe reservar el cuerpo completo en RAM).
+  const malformedJson = await postRaw('auth-api', '{');
+  assert.equal(malformedJson.status, 400);
+  assert.equal(malformedJson.data.code, 'INVALID_JSON');
+  const wrongContentType = await postRaw('letters-api', '{}', 'text/plain');
+  assert.equal(wrongContentType.status, 415);
+  assert.equal(wrongContentType.data.code, 'INVALID_CONTENT_TYPE');
+  const oversizedBody = `{"padding":"${'x'.repeat(150_100)}"}`;
+  const oversized = await postRaw('letters-api', oversizedBody, 'application/json', true);
+  assert.equal(oversized.status, 413);
+  assert.equal(oversized.data.code, 'PAYLOAD_TOO_LARGE');
 
   // El proyecto debe estar vacío salvo por la invitación bootstrap, que se
   // genera manualmente en la base de pruebas con el rol postgres.
@@ -105,6 +132,15 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
     password: env.NR_TEST_ACCOUNT_B_PASSWORD,
     displayName: env.NR_TEST_ACCOUNT_B_DISPLAY_NAME
   });
+
+  const pushConfiguration = await letters('push:config', {}, accountA.accessToken);
+  assert.equal(pushConfiguration.status, 200, `Consultar configuración Push: ${JSON.stringify(pushConfiguration.data)}`);
+  assert.equal(pushConfiguration.data.subscribed, false);
+  const invalidPushEndpoint = await letters('push:subscribe', {
+    subscription: { endpoint: 'http://untrusted.invalid/subscribe', keys: { p256dh: 'A'.repeat(87), auth: 'B'.repeat(22) } }
+  }, accountA.accessToken);
+  assert.equal(invalidPushEndpoint.status, 400);
+  assert.equal(invalidPushEndpoint.data.code, 'PUSH_ENDPOINT_INVALID');
 
   // Cuenta A crea un borrador privado. Repetir la clave creationRequestId
   // simula que el backend confirmó el guardado pero se perdió la respuesta.
@@ -164,6 +200,41 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
   assert.equal(afterAutosave.status, 200);
   assert.equal(afterAutosave.data.letter?.title, 'Autosave confirmado');
 
+  // Dos navegadores de A editan con la misma revisión. El bloqueo optimista debe
+  // aceptar exactamente una escritura y devolver conflicto a la otra.
+  const aSecondLogin = await auth('login', {
+    identifier: env.NR_TEST_ACCOUNT_A_USERNAME, password: env.NR_TEST_ACCOUNT_A_PASSWORD
+  });
+  assert.equal(aSecondLogin.status, 200);
+  const aSecondRefresh = await auth('refresh', { refreshToken: aSecondLogin.data.refreshToken });
+  assert.equal(aSecondRefresh.status, 200);
+  assert.equal(aSecondRefresh.data.sessionId, aSecondLogin.data.sessionId);
+  assert.notEqual(aSecondRefresh.data.accessToken, aSecondLogin.data.accessToken);
+  assert.notEqual(aSecondRefresh.data.refreshToken, aSecondLogin.data.refreshToken);
+  await expectDenied(await auth('session', {}, aSecondLogin.data.accessToken), 'Access token anterior después de refresh');
+
+  const concurrentRevision = Number(afterAutosave.data.letter?.revision || 2);
+  const [deviceOneSave, deviceTwoSave] = await Promise.all([
+    letters('draft:save', {
+      letterId: draftId, title: 'Edición del dispositivo 1', body: '<p>Guardado concurrente uno.</p>',
+      expectedRevision: concurrentRevision
+    }, accountA.accessToken),
+    letters('draft:save', {
+      letterId: draftId, title: 'Edición del dispositivo 2', body: '<p>Guardado concurrente dos.</p>',
+      expectedRevision: concurrentRevision
+    }, aSecondRefresh.data.accessToken)
+  ]);
+  const concurrentStatuses = [deviceOneSave.data.status, deviceTwoSave.data.status].sort();
+  assert.deepEqual(concurrentStatuses, ['conflict', 'saved'], `Debe ganar exactamente un dispositivo: ${JSON.stringify([deviceOneSave.data, deviceTwoSave.data])}`);
+  const afterConcurrentSave = await letters('get', { letterId: draftId }, accountA.accessToken);
+  assert.equal(afterConcurrentSave.status, 200);
+  assert.ok(['Edición del dispositivo 1', 'Edición del dispositivo 2'].includes(afterConcurrentSave.data.letter?.title));
+  assert.equal(Number(afterConcurrentSave.data.letter?.revision), concurrentRevision + 1);
+
+  const revokeASecond = await letters('session:revoke', { sessionId: aSecondRefresh.data.sessionId }, accountA.accessToken);
+  assert.equal(revokeASecond.status, 200);
+  await expectDenied(await auth('session', {}, aSecondRefresh.data.accessToken), 'La segunda sesión de A debe quedar revocada');
+
   // A no puede listar ni revocar sesiones de B, ni aunque conozca el UUID.
   const bSessions = await letters('sessions', {}, accountB.accessToken);
   assert.equal(bSessions.status, 200);
@@ -193,9 +264,13 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
   await expectDenied(revokedSessionUse, 'Una sesión revocada intenta operar');
 
   // A envía la carta; solo el destinatario B puede responder y marcarla leída.
-  const send = await letters('draft:send', { letterId: draftId, expectedRevision: 2 }, accountA.accessToken);
+  const sendRevision = Number(afterConcurrentSave.data.letter?.revision || concurrentRevision + 1);
+  const send = await letters('draft:send', { letterId: draftId, expectedRevision: sendRevision }, accountA.accessToken);
   assert.equal(send.status, 200, `Enviar carta A: ${JSON.stringify(send.data)}`);
   assert.equal(send.data.status, 'sent');
+  const replaySend = await letters('draft:send', { letterId: draftId, expectedRevision: sendRevision }, accountA.accessToken);
+  assert.equal(replaySend.status, 200);
+  assert.equal(replaySend.data.status, 'already_sent', 'Repetir el envío tras perder la respuesta no debe crear otra carta.');
   const sentLetter = send.data.letter;
   assert.ok(sentLetter?.thread_id);
   assert.equal(sentLetter.sender_id, accountA.user.id);
@@ -232,6 +307,15 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
   assert.equal(bArchive.status, 200);
   const bInboxAfterArchive = await letters('list', { folder: 'inbox' }, accountB.accessToken);
   assert.equal((bInboxAfterArchive.data.items || []).some(item => item.id === draftId), false);
+  // La papelera es personal: mover la copia de A no debe quitar la carta del
+  // buzón B; restaurarla recupera la copia de A sin duplicar el hilo.
+  const senderTrash = await letters('trash', { letterId: draftId }, accountA.accessToken);
+  assert.equal(senderTrash.status, 200);
+  const bStillHasSharedLetter = await letters('get', { letterId: draftId }, accountB.accessToken);
+  assert.equal(bStillHasSharedLetter.status, 200);
+  const senderRestore = await letters('restore', { letterId: draftId }, accountA.accessToken);
+  assert.equal(senderRestore.status, 200);
+
   const aBundle = await letters('get', { letterId: draftId }, accountA.accessToken);
   assert.equal(aBundle.status, 200);
   const bundleText = JSON.stringify(aBundle.data);
@@ -239,6 +323,22 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
   const aSent = await letters('list', { folder: 'sent' }, accountA.accessToken);
   const sentFromA = (aSent.data.items || []).find(item => item.id === draftId);
   assert.ok(sentFromA?.readByRecipientAt, 'El destinatario B debe ser el único que marque su lectura.');
+
+  // Rotación de los diez códigos de A y repetición de una petición cuya
+  // respuesta pudo perderse. El segundo intento debe confirmar el mismo bundle.
+  const recoveryCodesA = Array.from({ length: 10 }, () => recoveryCode());
+  const rotateBundlePayload = {
+    currentPassword: env.NR_TEST_ACCOUNT_A_PASSWORD,
+    recoveryCodes: recoveryCodesA,
+    requestId: randomUUID()
+  };
+  const rotatedBundle = await auth('recovery-codes:rotate', rotateBundlePayload, accountA.accessToken);
+  assert.equal(rotatedBundle.status, 200, `Rotar bundle de A: ${JSON.stringify(rotatedBundle.data)}`);
+  assert.equal(rotatedBundle.data.codeCount, 10);
+  assert.equal(rotatedBundle.data.alreadyRotated, false);
+  const replayedBundle = await auth('recovery-codes:rotate', rotateBundlePayload, accountA.accessToken);
+  assert.equal(replayedBundle.status, 200);
+  assert.equal(replayedBundle.data.alreadyRotated, true);
 
   // Código de recuperación de un solo uso: se consume una vez y se rechaza
   // al reutilizarlo. La cuenta B se autentica de nuevo con la contraseña nueva.
@@ -280,6 +380,19 @@ test('seguridad real con dos cuentas en un proyecto Supabase aislado', { skip: !
   assert.ok(retainedThread.some(item => item.id === draftId), 'La carta original debe conservarse.');
   assert.ok(retainedThread.some(item => /Respuesta de B/.test(String(item.title || '') + String(item.body || ''))), 'La respuesta compartida de B también debe conservarse.');
   assert.match(JSON.stringify(retained.data), /Cuenta eliminada/);
+
+  // Límite por cuenta para llamadas autenticadas a la carpeta de cartas.
+  let accountRateLimited = false;
+  for (let i = 0; i < 60; i++) {
+    const page = await letters('list', { folder: 'inbox' }, accountA.accessToken);
+    if (page.status === 429) {
+      accountRateLimited = true;
+      assert.ok(Number(page.data.retryAfterSeconds) > 0);
+      break;
+    }
+    assert.equal(page.status, 200, `Lectura autenticada inesperada: ${JSON.stringify(page.data)}`);
+  }
+  assert.equal(accountRateLimited, true, 'El bucket autenticado de list debe devolver 429 al superar su cuota por minuto.');
 
   // Rate limit de IP con identificadores inexistentes: se evita bloquear una
   // cuenta real y se comprueba el límite agregado al variar el username.

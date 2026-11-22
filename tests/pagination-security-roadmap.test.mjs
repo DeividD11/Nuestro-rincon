@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
@@ -31,9 +32,9 @@ test('GitHub Actions ejecuta el chequeo Deno/TypeScript antes de publicar Pages'
   const packageJson = JSON.parse(await read('../package.json'));
   const workflow = await read('../.github/workflows/pages.yml');
   assert.match(packageJson.scripts['check:edge'], /^deno check --config=/);
-  assert.match(workflow, /uses: denoland\/setup-deno@v2/);
+  assert.match(workflow, /uses: denoland\/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed/);
   assert.match(workflow, /run: npm run check:edge/);
-  assert.ok(workflow.indexOf('npm run check:edge') < workflow.indexOf('actions/deploy-pages@v4'));
+  assert.ok(workflow.indexOf('npm run check:edge') < workflow.indexOf('actions/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e'));
 });
 
 test('las carpetas se consultan con búsqueda y paginación en PostgreSQL', async () => {
@@ -54,7 +55,7 @@ test('hilos y notificaciones admiten páginas progresivas con orden fecha e ID',
   const core = await read('../supabase/functions/_shared/core.ts');
   const api = await read('../supabase/functions/letters-api/index.ts');
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(core, /export async function selectCursorPageRows/);
   assert.match(api, /selectCursorPageRows<Record<string, unknown>>\('letters',[\s\S]*'sent_at'/);
   assert.match(api, /selectCursorPageRows<Record<string, unknown>>\('notifications',[\s\S]*'created_at'/);
@@ -101,7 +102,7 @@ test('las carpetas usan paginación keyset fecha+UUID sin COUNT exacto ni OFFSET
 
 test('el cliente mantiene cursores y ya no presenta totales exactos por página', async () => {
   const navigation = await read('../assets/js/controllers/navigation-controller.js');
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const notification = await read('../assets/js/controllers/notification-controller.js');
   assert.match(navigation, /const cursor = pagination\.cursor/);
   assert.match(navigation, /repository\.list\(route, search, cursor/);

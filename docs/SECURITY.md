@@ -37,12 +37,12 @@
 - En una instalación completamente vacía, un operador con rol `postgres` debe generar la primera invitación desde Supabase SQL Editor. La función `bootstrap_app_registration_invite()` devuelve el código una sola vez y se niega a ejecutarse si ya existe una cuenta activa o pendiente.
 - La tabla `registration_invites` no guarda el código en claro. Si se pierde antes de utilizarse, revoca la invitación pendiente desde Configuración y genera otra. Si la persona ya lo utilizó, la invitación queda consumida y no puede reutilizarse. La invitación autoriza un registro; no sustituye al código de recuperación de una cuenta ya creada.
 - No hay recuperación por email. Si se pierde los códigos de recuperación y no existe una sesión activa desde la que regenerarlo, no hay un restablecimiento automático; por eso debe guardarse fuera del navegador.
-- No hay correo transaccional, CAPTCHA, segundo factor, notificaciones push ni cifrado de extremo a extremo.
+- No hay correo transaccional, CAPTCHA, segundo factor ni cifrado de extremo a extremo. Web Push está preparado en el código, pero permanece desactivado hasta desplegar la migración/Edge Function y configurar VAPID. Realtime privado permanece pendiente del puente OIDC/JWKS.
 - `sessionStorage` mantiene el refresh token y, durante una operación de registro/rotación, `localStorage` conserva los códigos de recuperación en claro junto con la clave idempotente y los datos mínimos para reintentar (nunca la contraseña). Un XSS persistente podría leer ambos; por eso se mantiene la CSP y la sanitización, y el handoff elimina el código al confirmarlo. El dato también se pierde si la persona borra el almacenamiento del sitio o cambia de navegador/dispositivo antes de guardarlo externamente.
 - La pantalla de entrega del código se restaura antes de cualquier comprobación remota de sesión. Mientras exista un código pendiente, se pausan la consulta de notificaciones, la sincronización de borradores y los eventos de ciclo de vida que pudieran reemplazar el contenido. Si otra pestaña revoca la sesión durante la entrega, el código permanece visible y, al confirmar que fue guardado, la aplicación pide iniciar sesión de nuevo en vez de reutilizar esa sesión.
 - La credencial privada inyectada por Supabase permite acceso de servicio; una vulnerabilidad de autorización en una Edge Function sería crítica.
 - PBKDF2 es una alternativa compatible con Web Crypto, no Argon2id.
-- No se han ejecutado todavía pruebas dinámicas de dos cuentas contra un Supabase aislado, pgTAP ni Playwright; el paquete incluye los escenarios y la configuración para realizarlas. No se han ejecutado pruebas de penetración ni una auditoría dinámica XSS completa.
+- La suite dinámica ampliada de dos cuentas, pgTAP y Playwright debe ejecutarse contra un Supabase aislado; no se han ejecutado en producción ni en esta revisión, y el entorno local no dispone de Deno/psql ni credenciales de branch. El paquete incluye los escenarios y la configuración para realizarlas. No se han ejecutado pruebas de penetración ni una auditoría dinámica XSS completa.
 
 ## Operación
 
@@ -61,3 +61,12 @@ Consulta [`INVITATIONS.md`](INVITATIONS.md) para el procedimiento operativo de c
 La caché de rutas privadas está segmentada por ID de cuenta. Al cambiar de identidad se invalidan precargas y datos de pantalla, se cierra el editor previo y se reinicia la identidad de los borradores locales. La interfaz y `letters-api` deduplican cartas por UUID antes de renderizar listas, inicio y conversaciones.
 
 La organización (favorito, archivo y papelera) es por participante; una carta puede figurar intencionalmente en Favoritos y en la bandeja principal si solo está marcada como favorita. Archivar la oculta de la bandeja principal de esa persona, y moverla a Papelera la oculta de las demás carpetas de esa persona. La purga del contenido de una carta enviada requiere confirmación de ambos participantes. Consulta [`LETTERS_CONSISTENCY.md`](LETTERS_CONSISTENCY.md) para los estados exactos y el procedimiento de pruebas.
+
+
+## Solicitudes HTTP y cuotas
+
+Las Edge Functions aceptan únicamente `application/json`/`application/*+json`, leen el stream de forma incremental y cancelan al superar 150 KB incluso si el cliente omite `Content-Length`. JSON inválido devuelve 400, media type no permitido 415 y exceso de tamaño 413. Las operaciones a PostgREST tienen un límite de 12 segundos y devuelven 504 al agotar el tiempo. `letters-api` consume cuotas por usuario/sesión desde PostgreSQL (no desde memoria efímera de una instancia Edge).
+
+## Notificaciones externas
+
+Las suscripciones Web Push quedan asociadas a la sesión autenticada. El cliente solo recibe la clave VAPID pública; la privada se mantiene en secrets del runtime. Los payloads son genéricos y no incluyen datos de cartas. Las rutas de suscripción validan host HTTPS/proveedor y la revocación de sesión elimina las suscripciones correspondientes.

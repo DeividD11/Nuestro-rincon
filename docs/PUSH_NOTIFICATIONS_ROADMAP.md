@@ -1,33 +1,46 @@
-# Hoja de ruta: notificaciones externas
+# Notificaciones externas y Web Push
 
-## Estado
+## Estado de implementación en esta versión
 
-**Pospuesto; no implementado en esta versión.** La aplicación mantiene únicamente sus avisos y notificaciones dentro de la web y sus comprobaciones periódicas mientras está abierta.
+**Implementación preparada en el código; todavía no activada en Supabase.** La interfaz permite solicitar consentimiento desde Configuración, hay un service worker con alcance relativo al subdirectorio de GitHub Pages y el backend tiene rutas para registrar/revocar suscripciones y enviar avisos genéricos. Para activarlo en un entorno se requiere aplicar `20261121220000_authenticated_api_rate_limits_and_web_push.sql`, desplegar `letters-api` y configurar secretos VAPID. No se han enviado avisos reales desde esta sesión.
 
-## Objetivo futuro
+## Flujo
 
-Permitir que una persona reciba una notificación del sistema operativo cuando llegue una carta o una respuesta, incluso si la pestaña no está abierta. La entrega dependerá de que el navegador, el dispositivo y el sistema operativo admitan Web Push y de que la persona haya concedido permiso.
+1. La persona pulsa **Activar avisos externos** en Configuración. No se solicita permiso al cargar la página.
+2. El service worker se registra con alcance `./`, compatible con un repositorio desplegado bajo `/nombre-del-repo/` en GitHub Pages.
+3. El navegador crea una suscripción con la clave VAPID pública obtenida de `letters-api`.
+4. La Edge Function valida la sesión opaca propia, comprueba el endpoint HTTPS contra la lista de proveedores admitidos y guarda endpoint/keys asociados a `user_id` y `session_id`.
+5. Al enviar una carta o crear una respuesta, `letters-api` busca la notificación persistida y programa el envío genérico en una tarea de fondo (`EdgeRuntime.waitUntil`) para no retrasar la respuesta HTTP. Solo se consideran dispositivos con sesión vigente. El contenido de la carta nunca entra en el payload push.
+6. Un recibo único por `notification_id` + `subscription_id` evita duplicados. Las entregas fallidas pueden reintentarse tras una ventana de cinco minutos cuando se repite la operación; 404/410 elimina la suscripción caducada.
+7. Al cerrar sesión, revocar dispositivo, cambiar contraseña o eliminar cuenta, el backend elimina las suscripciones asociadas a las sesiones que pierden acceso.
 
-## Diseño propuesto
+## Secretos VAPID
 
-1. **Consentimiento explícito.** Solicitar permiso únicamente después de que la persona active la opción de notificaciones externas en Configuración. No mostrar el diálogo de permiso al cargar la página.
-2. **Service Worker.** Registrar un service worker con alcance correcto bajo el subdirectorio de GitHub Pages y probar instalación, actualización y cierre de sesión.
-3. **Suscripciones Web Push.** Crear y revocar suscripciones desde una Edge Function autenticada. Asociar cada suscripción a la cuenta propietaria y almacenar solo los datos necesarios para poder enviar y revocar.
-4. **Claves VAPID.** Generar y custodiar la clave privada exclusivamente en el backend. La clave pública puede distribuirse al navegador para crear la suscripción; ningún secreto privado debe aparecer en los assets ni en el repositorio.
-5. **Eventos permitidos.** Enviar avisos únicamente para eventos autorizados por las preferencias: nueva carta o respuesta. No enviar contenido, título de la carta, remitente ni fragmentos privados en el payload; usar un texto genérico y recuperar detalles después de abrir la sesión.
-6. **Revocación.** Desactivar suscripciones al cerrar sesión cuando corresponda, al revocar un dispositivo, al eliminar una cuenta o cuando el proveedor informe que una suscripción dejó de existir.
-7. **Protección frente a duplicados.** Añadir idempotencia por evento, control de reintentos, caducidad y métricas de entrega. La notificación push es de mejor esfuerzo y no puede considerarse un canal garantizado.
-8. **Pruebas multiplataforma.** Probar Safari/iOS, Chrome/Android, Chrome/Edge/Firefox de escritorio y las restricciones de instalación/permiso de cada plataforma antes de activar el envío general.
+Genera un par VAPID en un equipo de confianza con `web-push@4.0.0` o una herramienta compatible. Configura estas variables como **secrets de la Edge Function** en el proyecto/branch que se esté probando:
 
-## Compatibilidad con la autenticación actual
+- `VAPID_PUBLIC_KEY`: clave pública para que el navegador cree la suscripción.
+- `VAPID_PRIVATE_KEY`: clave privada para firmar solicitudes de envío. Nunca debe estar en el frontend, en Git ni en el ZIP.
+- `VAPID_SUBJECT`: identificador de contacto `mailto:` o una URL HTTPS.
 
-Nuestro Rincón usa sesiones propias opacas y no Supabase Auth. La futura integración debe validar la sesión propia en la Edge Function que registra, consulta o revoca una suscripción. No debe confiar en un `user_id` enviado por el navegador ni usar la clave `service_role` en el cliente.
+En `letters-api` la librería `web-push@4.0.0` envía el mensaje cifrado por Web Push. El navegador recibe únicamente el texto genérico “Tienes una nueva carta / Abre Nuestro Rincón para leerla”. No se debe añadir el título, remitente, cuerpo, HTML, `thread_id` ni `letter_id` al payload.
 
-## Criterios para considerarlo listo
+## Límites y operación
 
-- El consentimiento puede activarse y revocarse desde la configuración.
-- No se filtra contenido de cartas en payloads, logs ni pantallas bloqueadas.
-- Un dispositivo no recibe avisos de otra cuenta después de cerrar sesión o revocar su sesión.
-- Los eventos duplicados no generan avisos repetidos.
-- La experiencia dentro de la web continúa funcionando aunque Web Push no esté disponible o se deniegue el permiso.
-- El README documenta que la entrega externa depende de permisos, conectividad y soporte del navegador; no promete recepción garantizada.
+- Push es best effort: el navegador, el SO o el proveedor pueden retrasar o descartar el aviso. No sustituye la bandeja de notificaciones.
+- Safari/iOS puede exigir que la web esté instalada y que se otorgue permiso; la compatibilidad depende de la versión del sistema. Probar en cada plataforma antes de activar.
+- El servicio limita a 20 suscripciones por destinatario por despacho. Revisar entregas fallidas sin registrar endpoints ni claves.
+- No habilitar hasta que la migración, `letters-api` y secretos VAPID estén sincronizados en un entorno aislado.
+- La configuración VAPID ausente mantiene Push deshabilitado y no rompe las notificaciones dentro de la web.
+
+## Realtime dentro de la página
+
+La notificación dentro de una pestaña sigue usando `AdaptivePoller` (30 s activo, 2 min en reposo). No se activa Supabase Realtime porque las sesiones actuales son tokens opacos, no JWT verificables por `realtime.messages`. No se crea ningún canal público como alternativa. Lee [`REALTIME_AUTH_BRIDGE.md`](REALTIME_AUTH_BRIDGE.md) para el puente OIDC/JWKS asimétrico requerido para Realtime privado.
+
+## Criterios pendientes antes de activar
+
+- Aplicar y revisar la migración en una branch aislada.
+- Desplegar `auth-api` y `letters-api` desde el mismo release probado.
+- Configurar y rotar VAPID como secretos de Edge Functions.
+- Verificar el flujo extremo a extremo en Android/Chrome, iOS/Safari instalado y navegadores de escritorio.
+- Confirmar que logout/revocación elimina la suscripción y que cuenta A nunca recibe notificaciones de B.
+- Observar tasas 201/404/410/429 sin registrar datos privados.

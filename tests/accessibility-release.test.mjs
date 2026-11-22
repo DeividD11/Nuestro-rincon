@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -96,7 +97,7 @@ test('el menú móvil vuelve inerte el panel oculto y desplaza el foco antes del
 });
 
 test('los formularios tienen etiquetas asociadas y botones con tipo explícito', async () => {
-  const source = await read('../assets/js/views/app-view.js');
+  const source = await readAppViewSource();
   const forms = [...source.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/g)];
   assert.ok(forms.length >= 8, 'se esperan los formularios de acceso, recuperación y configuración');
   for (const [, attributes, body] of forms) {
@@ -149,21 +150,61 @@ test('el README coincide con el baseline v11 y la distribución ZIP omite artefa
   assert.match(readme, /npm run package:zip/);
 });
 
-test('las notificaciones push se mantienen documentadas como función futura no activa', async () => {
+test('Web Push está preparado pero no se activa antes de configurar y desplegar backend', async () => {
   const roadmap = await read('../docs/PUSH_NOTIFICATIONS_ROADMAP.md');
   const readme = await read('../README.md');
-  assert.match(roadmap, /Pospuesto; no implementado/);
-  assert.match(roadmap, /No enviar contenido, título de la carta, remitente ni fragmentos privados/);
-  assert.match(roadmap, /sesiones propias opacas/);
-  assert.match(readme, /notificaciones externas todavía no están implementadas/);
+  const realtime = await read('../docs/REALTIME_AUTH_BRIDGE.md');
+  const lettersApi = await read('../supabase/functions/letters-api/index.ts');
+  const authApi = await read('../supabase/functions/auth-api/index.ts');
+  assert.match(roadmap, /todavía no activada en Supabase/);
+  assert.match(roadmap, /No se debe añadir el título, remitente, cuerpo, HTML/);
+  assert.match(roadmap, /VAPID_PRIVATE_KEY/);
+  assert.match(roadmap, /user_id.*session_id/);
+  assert.match(readme, /Web Push tiene service worker[\s\S]*no se activa hasta aplicar la migración nueva/);
+  assert.match(lettersApi, /action === 'draft:send' \|\| action === 'reply'/);
+  assert.match(lettersApi, /EdgeRuntime\?\.waitUntil|waitUntil: \(promise: Promise<unknown>\) => void/);
+  assert.match(lettersApi, /Tienes una nueva carta/);
+  assert.match(authApi, /recover-with-code[\s\S]{0,1800}push_subscriptions/);
+  assert.match(realtime, /No se abre un canal público como atajo/);
 });
 
 
+
+test('las pruebas de seguridad remota requieren secretos completos y destino aislado', async () => {
+  const integration = await read('../.github/workflows/security-integration.yml');
+  const database = await read('../.github/workflows/security-db.yml');
+  const browser = await read('../.github/workflows/security-playwright.yml');
+  for (const secret of [
+    'NR_TEST_SUPABASE_URL', 'NR_TEST_PROJECT_REF', 'NR_TEST_PUBLISHABLE_KEY',
+    'NR_TEST_BOOTSTRAP_INVITATION', 'NR_TEST_ACCOUNT_A_USERNAME', 'NR_TEST_ACCOUNT_A_PASSWORD',
+    'NR_TEST_ACCOUNT_B_USERNAME', 'NR_TEST_ACCOUNT_B_PASSWORD'
+  ]) assert.ok(integration.includes(secret), `Falta validación/configuración de ${secret} en integración`);
+  assert.match(integration, /Faltan datos de la prueba aislada/);
+  assert.match(database, /NR_TEST_CONFIRM_ISOLATED: 'YES'/);
+  assert.match(database, /postgresql-client/);
+  assert.match(database, /NR_TEST_DATABASE_URL/);
+  assert.match(browser, /NR_E2E_ACCOUNT_A_PASSWORD/);
+  assert.match(browser, /NR_E2E_ACCOUNT_B_PASSWORD/);
+});
+
+
+test('cada Edge Function tiene su propio deno.json y web-push está versionado', async () => {
+  const config = await read('../supabase/config.toml');
+  const auth = JSON.parse(await read('../supabase/functions/auth-api/deno.json'));
+  const letters = JSON.parse(await read('../supabase/functions/letters-api/deno.json'));
+  const packageJson = JSON.parse(await read('../package.json'));
+  assert.match(config, /functions\.auth-api[\s\S]*import_map = "\.\/functions\/auth-api\/deno\.json"/);
+  assert.match(config, /functions\.letters-api[\s\S]*import_map = "\.\/functions\/letters-api\/deno\.json"/);
+  assert.equal(auth.imports.linkedom, 'npm:linkedom@0.18.12');
+  assert.equal(letters.imports['web-push'], 'npm:web-push@4.0.0');
+  assert.match(packageJson.scripts['check:edge'], /auth-api\/deno\.json[\s\S]*letters-api\/deno\.json/);
+});
+
 test('el pie del editor queda dentro del editor-shell y no invade el área del sidebar', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const css = await read('../assets/css/editor.css');
-  const start = view.indexOf('renderEditor(state) {');
-  const end = view.indexOf('renderLetter(state)', start);
+  const start = view.indexOf('export function renderEditor(view, state) {');
+  const end = view.indexOf('export function renderLetter(view, state)', start);
   const editor = view.slice(start, end);
   assert.match(editor, /editor-writing-surface[\s\S]*letter-editor[\s\S]*<div class="editor-footer">[\s\S]*<\/section>/);
   assert.doesNotMatch(editor, /letter-body-help[\s\S]*<\/div><\/div><div class="editor-footer">/);
@@ -174,7 +215,7 @@ test('el pie del editor queda dentro del editor-shell y no invade el área del s
 
 
 test('el pie del editor pertenece a editor-shell y sus reglas viven en un módulo CSS específico', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const css = await read('../assets/css/editor.css');
   const index = await read('../index.html');
   const start = view.indexOf('<section class="editor-shell">');
@@ -194,7 +235,7 @@ test('la auditoría de contraste cubre las superficies reales de ambos temas y e
   assert.match(contrast, /panel lateral oscuro/);
   assert.match(contrast, /panel lateral claro/);
   assert.match(contrast, /texto de identificación de la barra superior/);
-  const appCss = await read('../assets/css/app.css');
+  const appCss = await readCssBundle();
   assert.match(appCss, /\.topbar-kicker\s*\{[^}]*color:\s*var\(--muted\)/);
   assert.doesNotMatch(appCss, /\.topbar-kicker\s*\{[^}]*color:\s*#a18e84/i);
   assert.match(workflow, /npm run check:contrast/);
@@ -211,7 +252,10 @@ test('axe-core WCAG 2.2 AA corre en ambos temas y Playwright forma parte del gat
   assert.equal(lock.packages['node_modules/axe-core'].version, '4.14.1');
   assert.match(axe, /wcag22aa/);
   assert.match(axe, /\['light', 'dark'\]/);
+  assert.match(axe, /'trash', 'letter'/);
+  assert.match(axe, /showConfirmDialog/);
+  assert.match(axe, /\[640, 320\]/);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run test:a11y/);
-  assert.ok(workflow.indexOf('npm run test:a11y') < workflow.indexOf('actions/upload-artifact@v4'));
+  assert.ok(workflow.indexOf('npm run test:a11y') < workflow.indexOf('actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f'));
 });

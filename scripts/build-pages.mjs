@@ -9,7 +9,7 @@ const output = resolve(root, '_site');
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-for (const file of ['index.html', '404.html', '.nojekyll']) {
+for (const file of ['index.html', '404.html', '.nojekyll', 'manifest.webmanifest', 'service-worker.js']) {
   await cp(resolve(root, file), resolve(output, file));
 }
 await cp(resolve(root, 'assets'), resolve(output, 'assets'), { recursive: true });

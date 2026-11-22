@@ -46,6 +46,11 @@ month="$(date -u +'%Y-%m')"
 day="$(date -u +'%d')"
 base="nuestro-rincon-${project_ref}-${stamp}"
 
+read_migration_history() {
+  psql "$NR_BACKUP_DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atqc \
+    "select coalesce(jsonb_agg(jsonb_build_object('version', version, 'name', name) order by version), '[]'::jsonb)::text from supabase_migrations.schema_migrations;"
+}
+
 read_row_counts() {
   psql "$NR_BACKUP_DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atqc \
     "select jsonb_build_object(\
@@ -60,34 +65,44 @@ read_row_counts() {
 
 printf 'Contando registros de control antes de la exportación…\n'
 row_counts_before="$(read_row_counts)"
+migration_history_before="$(read_migration_history)"
 
 printf 'Generando exportación lógica del proyecto %s…\n' "$project_ref"
 # roles.sql puede quedar vacío si no hay roles personalizados exportables; schema y data no.
-supabase db dump --db-url "$NR_BACKUP_DATABASE_URL" --role-only --file "$work_dir/roles.sql"
-supabase db dump --db-url "$NR_BACKUP_DATABASE_URL" --schema public --file "$work_dir/schema.sql"
-supabase db dump --db-url "$NR_BACKUP_DATABASE_URL" --schema public --data-only --use-copy \
+supabase db dump --remote="$NR_BACKUP_DATABASE_URL" --role-only --file "$work_dir/roles.sql"
+supabase db dump --remote="$NR_BACKUP_DATABASE_URL" --schema public --file "$work_dir/schema.sql"
+supabase db dump --remote="$NR_BACKUP_DATABASE_URL" --schema public --data-only --use-copy \
   --file "$work_dir/data.sql"
 
 # Dos ejecuciones separadas de db dump no comparten una misma instantánea PostgreSQL.
 # Repetir el esquema y los contadores detecta cambios de DDL y variaciones netas de
 # cardinalidad durante el intervalo; si los detecta, no publica un backup dudoso.
-supabase db dump --db-url "$NR_BACKUP_DATABASE_URL" --schema public --file "$work_dir/schema-after.sql"
+supabase db dump --remote="$NR_BACKUP_DATABASE_URL" --schema public --file "$work_dir/schema-after.sql"
 if ! cmp -s "$work_dir/schema.sql" "$work_dir/schema-after.sql"; then
   echo 'El esquema public cambió durante la exportación. Se cancela la copia y debe reintentarse.' >&2
   exit 1
 fi
 row_counts_after="$(read_row_counts)"
+migration_history_after="$(read_migration_history)"
 if [[ "$row_counts_before" != "$row_counts_after" ]]; then
   echo 'Cambió el número de registros de control durante la exportación. Se cancela la copia y debe reintentarse.' >&2
   exit 1
 fi
+if [[ "$migration_history_before" != "$migration_history_after" ]]; then
+  echo 'El historial de migraciones cambió durante la exportación. Se cancela la copia y debe reintentarse.' >&2
+  exit 1
+fi
 
-NR_BACKUP_ROW_COUNTS="$row_counts_after" NR_BACKUP_CREATED_AT="$created_at" node --input-type=module <<'NODE' > "$work_dir/manifest.json"
+NR_BACKUP_ROW_COUNTS="$row_counts_after" NR_BACKUP_MIGRATION_HISTORY="$migration_history_after" NR_BACKUP_CREATED_AT="$created_at" node --input-type=module <<'NODE' > "$work_dir/manifest.json"
 const rowCounts = JSON.parse(process.env.NR_BACKUP_ROW_COUNTS || 'null');
 if (!rowCounts || typeof rowCounts !== 'object' || Array.isArray(rowCounts)) throw new Error('No se pudieron obtener los recuentos de verificación.');
 for (const key of ['app_users','letters','letter_threads','user_sessions','user_recovery_codes','notifications']) {
   if (!Number.isSafeInteger(rowCounts[key]) || rowCounts[key] < 0) throw new Error(`Recuento inválido para ${key}.`);
 }
+const migrationHistory = JSON.parse(process.env.NR_BACKUP_MIGRATION_HISTORY || 'null');
+if (!Array.isArray(migrationHistory) || migrationHistory.some(item =>
+  !/^\d{14}$/.test(String(item?.version || '')) || (item?.name !== null && item?.name !== undefined && (typeof item.name !== 'string' || item.name.length > 160))
+)) throw new Error('El historial de migraciones no tiene un formato válido.');
 const manifest = {
   format: 'nuestro-rincon-logical-backup',
   formatVersion: 1,
@@ -96,11 +111,13 @@ const manifest = {
   scope: 'public',
   components: ['roles.sql','schema.sql','data.sql'],
   rowCounts,
+  migrationHistory,
   encryption: 'age',
-  consistencyChecks: ['public-schema-identical-before-and-after-data-export','six-domain-table-counts-identical-before-and-after-export'],
+  consistencyChecks: ['public-schema-identical-before-and-after-data-export','six-domain-table-counts-identical-before-and-after-export','migration-ledger-identical-before-and-after-export'],
   notes: [
     'Logical dump generated with Supabase CLI.',
     'Supabase-managed schemas are excluded by Supabase CLI.',
+    'migrationHistory is archival metadata only; it is not restored into the target migration ledger.',
     'Storage API object bytes and the Supabase migration ledger are not included.',
     'Data rows are exported by a single pg_dump data-only operation.',
     'The backup is accepted only when the public schema dump and six control counts remain stable during export.',

@@ -13,9 +13,9 @@ Cada copia cifrada contiene:
 - `roles.sql`: roles personalizados incluidos por Supabase CLI. Los respaldos administrados de Supabase no incluyen contraseñas de roles personalizados; si se restaura alguno, habrá que restablecerlas.
 - `schema.sql`: objetos del esquema `public`, incluidas tablas, funciones, índices, restricciones y triggers que la herramienta exporte.
 - `data.sql`: datos del esquema `public`, incluidas cuentas propias, sesiones, códigos de recuperación, invitaciones, cartas y estados.
-- `manifest.json`: referencia de proyecto, fecha, versión de formato y alcance de la copia.
+- `manifest.json`: referencia de proyecto, fecha, versión de formato, alcance, recuentos de control y una instantánea de `supabase_migrations.schema_migrations` como metadato de referencia. El historial no se restaura ni se marca como aplicado en el destino.
 
-La exportación de Supabase CLI excluye esquemas administrados por Supabase y extensiones. La base de datos no contiene los bytes de los objetos guardados mediante Storage API: si en el futuro la aplicación usa buckets para adjuntos, esos objetos requieren un respaldo adicional del proveedor de Storage.
+La exportación de Supabase CLI excluye esquemas administrados por Supabase y extensiones. El script comprueba que el dump de `public`, seis recuentos de tablas y el historial de migraciones permanecen estables entre las lecturas anteriores y posteriores a la exportación; son controles de consistencia, no una instantánea transaccional única. La base de datos no contiene los bytes de los objetos guardados mediante Storage API: si en el futuro la aplicación usa buckets para adjuntos, esos objetos requieren un respaldo adicional del proveedor de Storage.
 
 No se almacenan volcados de producción en el repositorio, en el ZIP del proyecto ni en los artefactos de GitHub Actions. El paquete se cifra con `age` antes de cargarlo al bucket. El hash SHA-256 del archivo cifrado se guarda como archivo lateral para detectar corrupción, no para sustituir la prueba de restauración.
 
@@ -108,7 +108,7 @@ El script comprueba primero el archivo `.sha256`, descifra temporalmente, exige 
 6. Ejecuta `npm run test:db` con `NR_TEST_CONFIRM_ISOLATED=YES`, `NR_DB_TEST_PROJECT_REF` y `NR_TEST_DATABASE_URL` apuntando únicamente al proyecto aislado. Además, realiza las pruebas de integración con dos cuentas de prueba y comprueba acceso, cartas, respuestas, borradores, favoritos, papelera, recuperación y eliminación compartida.
 7. Documenta fecha, checksum, duración, errores y resultados. Una copia solo se considera restaurable cuando esta prueba se completa correctamente.
 
-La restauración prepara `extensions` y habilita `pgcrypto`, requerido por `extensions.gen_random_bytes` en el flujo de invitaciones. Revisa otras extensiones que tu esquema futuro pueda requerir antes de restaurar. La restauración SQL no despliega Edge Functions ni recupera variables/secretos de Edge Functions, configuración de GitHub, objetos de Storage ni el historial interno de migraciones. Las sesiones se revocan deliberadamente en el destino aislado y las personas deberán volver a iniciar sesión allí. Los datos y el esquema `public` son una instantánea; no reconstruyen el camino de migraciones histórico ni sustituyen un baseline versionado revisado. Los roles personalizados no incluyen contraseñas; habrá que restablecerlas si se usan. Mantén el código fuente y `supabase/config.toml` versionados por separado, y vuelve a configurar los secretos del nuevo proyecto.
+La restauración prepara `extensions` y habilita `pgcrypto`, requerido por `extensions.gen_random_bytes` en el flujo de invitaciones. Revisa otras extensiones que tu esquema futuro pueda requerir antes de restaurar. La restauración SQL no despliega Edge Functions ni recupera variables/secretos de Edge Functions, configuración de GitHub, objetos de Storage ni el historial interno de migraciones. El manifiesto conserva los timestamps/nombres observados como referencia, pero no se insertan en `supabase_migrations.schema_migrations` durante la restauración. Las sesiones se revocan deliberadamente en el destino aislado y las personas deberán volver a iniciar sesión allí. Los datos y el esquema `public` son una instantánea; no reconstruyen el camino de migraciones histórico ni sustituyen un baseline versionado revisado. Los roles personalizados no incluyen contraseñas; habrá que restablecerlas si se usan. Mantén el código fuente y `supabase/config.toml` versionados por separado, y vuelve a configurar los secretos del nuevo proyecto.
 
 ## Política de respaldo y revisión
 
@@ -127,4 +127,10 @@ La restauración prepara `extensions` y habilita `pgcrypto`, requerido por `exte
 - [GitHub Actions workflow syntax (`schedule`)](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)
 
 
-La automatización fija Supabase CLI `3.0.0` y usa `--db-url <CONNECTION_STRING>` para pasar la URL PostgreSQL explícita. `--remote` se reserva para identificar una referencia de proyecto/branch en los comandos que la admiten; no lo uses como sinónimo de URL. Comprueba `supabase db dump --help` al actualizar la CLI.
+## Versión de Supabase CLI y destino remoto
+
+Los workflows fijan Supabase CLI `3.0.0` mediante `supabase/setup-cli` con la acción anclada al commit SHA verificado `689adcfb80d947100a1eab127289b97d1fb07b13` (etiqueta de la acción `v3.2.0`). En CLI v3, `--remote=<ref|branch|url>` acepta tanto una referencia como una URL PostgreSQL explícita. Los flags `--db-url`, `--linked` y `--project-ref` todavía funcionan en v3, pero están obsoletos y se retirarán en v4; por ello los scripts usan `--remote="$NR_BACKUP_DATABASE_URL"`. El comando `db dump` no escribe en la base remota. No uses un `db push`, `db reset` o `migration repair` como parte de un backup.
+
+La metadata `migrationHistory` del manifiesto permite comparar el estado del ledger que se respaldó, pero no sustituye los archivos fuente ni debe aplicarse automáticamente en un proyecto restaurado. Para reconciliar el código y el historial ejecuta el procedimiento de [`docs/SYNC_RELEASE_RUNBOOK.md`](SYNC_RELEASE_RUNBOOK.md).
+
+Referencia del cambio CLI v3: [Migrating to Supabase CLI v3](https://supabase.com/docs/guides/local-development/cli/migrating-to-v3).

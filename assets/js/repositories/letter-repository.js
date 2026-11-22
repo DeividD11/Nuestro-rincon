@@ -19,6 +19,9 @@ export class LetterRepository {
   saveSettings(settings) { return this.api.letters('settings:update', settings); }
   sessions() { return this.api.letters('sessions'); }
   revokeSession(sessionId) { return this.api.letters('session:revoke', { sessionId }); }
+  pushConfig() { return this.api.letters('push:config'); }
+  subscribePush(subscription) { return this.api.letters('push:subscribe', { subscription, userAgent: navigator.userAgent }); }
+  unsubscribePush(endpoint) { return this.api.letters('push:unsubscribe', { endpoint }); }
   renameProfile(displayName) { return this.api.letters('profile:rename', { displayName }); }
   updateAccount(data) { return this.api.auth('account:update', data); }
   updatePassword(data) { return this.api.auth('password:update', data); }

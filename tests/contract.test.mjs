@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -41,7 +42,7 @@ test('el sitio declara CSP y el flujo de despliegue de Pages', async () => {
   const html = await read('../index.html');
   const workflow = await read('../.github/workflows/pages.yml');
   assert.match(html, /Content-Security-Policy/);
-  assert.match(workflow, /actions\/deploy-pages@v4/);
+  assert.match(workflow, /actions\/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e/);
   assert.match(workflow, /path: \.\/_site/);
 });
 
@@ -59,7 +60,7 @@ test('el backend habilita CORS sin cookies y exige sesión propia para datos pri
 
 test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () => {
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(controller, /async downloadHtml\(letterId\)/);
   assert.match(controller, /text\/html;charset=utf-8/);
   assert.match(controller, /sanitizeRichHtml\(letter\.body/);
@@ -70,7 +71,7 @@ test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () 
 test('la instantánea del esquema se obtiene del historial real y no de un esquema supuesto', async () => {
   const schemaReadme = await read('../supabase/schema/README.md');
   const projectReadme = await read('../README.md');
-  assert.match(schemaReadme, /supabase db dump --db-url/);
+  assert.match(schemaReadme, /supabase db dump --remote="\$NR_SCHEMA_SOURCE_DATABASE_URL"/);
   assert.doesNotMatch(schemaReadme, /supabase db dump --linked/);
   assert.match(projectReadme, /23 migraciones/);
 });
@@ -84,13 +85,13 @@ test('la raíz del repositorio contiene la entrada web y Pages construye solo el
   assert.match(build, /index\.html/);
   assert.match(build, /assets/);
   assert.match(workflow, /run: npm run build:pages/);
-  assert.match(workflow, /actions\/configure-pages@v6/);
+  assert.match(workflow, /actions\/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d/);
   assert.match(workflow, /run: npm test/);
   assert.match(workflow, /path: \.\/_site/);
 });
 
 test('el registro no requiere correo ni secretos de instalación', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   const session = await read('../assets/js/services/session-service.js');
   const api = await read('../assets/js/services/api-client.js');
@@ -164,7 +165,7 @@ test('la navegación precarga secciones y reutiliza una caché breve para evitar
 });
 
 test('las preferencias guardan el tema claro, oscuro o del sistema por usuario', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   const api = await read('../supabase/functions/letters-api/index.ts');
   const css = await readCssBundle();
@@ -179,7 +180,7 @@ test('las preferencias guardan el tema claro, oscuro o del sistema por usuario',
 
 
 test('la navegación muestra carga ligera y ofrece recuperación cuando una sección falla', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   assert.match(view, /route-skeleton/);
   assert.doesNotMatch(view, /Abriendo esta sección/);
@@ -199,7 +200,7 @@ test('las lecturas tienen tiempo máximo y reintento acotado sin repetir escritu
 });
 
 test('Archivo, Borradores y Papelera tienen acciones y mensajes propios', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   assert.match(view, /folder-\$\{state\.route\}/);
   assert.match(view, /archive: \['⌑'/);
@@ -213,7 +214,7 @@ test('Archivo, Borradores y Papelera tienen acciones y mensajes propios', async 
 });
 
 test('el aviso de notificaciones usa un conmutador accesible y las sesiones son tarjetas completas', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const css = await readCssBundle();
   assert.match(view, /id="settings-notifications" class="toggle-input" type="checkbox"/);
   assert.match(view, /class="session-list"/);

@@ -51,7 +51,9 @@ const files = [
   'supabase/tests/shared_letter_purge.test.sql',
   'supabase/tests/profile_rename_transaction.test.sql',
   'supabase/tests/recovery_code_bundles.test.sql',
-  'supabase/tests/cursor_pagination.test.sql'
+  'supabase/tests/cursor_pagination.test.sql',
+  'supabase/tests/api_rate_limits_and_push.test.sql',
+  'supabase/tests/search_semantics.test.sql'
 ];
 
 console.log(`Destino pgTAP: ${projectRef} (aislado). Las pruebas se ejecutan dentro de sus propias transacciones y revierten sus fixtures.`);

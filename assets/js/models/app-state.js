@@ -9,6 +9,7 @@ export class AppState {
     this.notifications = [];
     this.notificationPagination = { cursor: null, loadedCount: 0, limit: 30, hasMore: false, loading: false };
     this.settings = { theme: 'system', time_zone: 'America/Bogota', in_app_notifications_enabled: true };
+    this.pushNotifications = { supported: null, configured: false, subscribed: false, permission: 'default', busy: false };
     this.sessions = [];
     this.invitation = null;
     this.search = '';

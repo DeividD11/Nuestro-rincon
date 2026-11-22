@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -61,7 +62,7 @@ test('las acciones de Papelera muestran claramente la confirmación compartida y
 });
 
 test('las listas y la vista de conversación deduplican mensajes por ID', async () => {
-  const source = await read('../assets/js/views/app-view.js');
+  const source = await readAppViewSource();
   assert.match(source, /const items = \[\.\.\.new Map\(\(state\.letters \|\| \[\]\)/);
   assert.match(source, /const threadItems = \[\.\.\.new Map\(\(data\.thread \|\| \[\]\)/);
   assert.match(source, /threadItems\.length > 1/);
@@ -102,9 +103,9 @@ test('conversation-item y sus botones tienen estados claros en temas claro y osc
 
 test('cambiar entre cartas del mismo hilo actualiza solo el detalle y conserva el shell', async () => {
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const method = controller.slice(controller.indexOf('async openLetter(letterId'), controller.indexOf('async openLetterForSend'));
-  const partial = view.slice(view.indexOf('  renderLetterDetail(state) {'), view.indexOf('  renderLetterContent(state) {'));
+  const partial = view.slice(view.indexOf('export function renderLetterDetail(view, state) {'), view.indexOf('export function renderLetterContent(view, state) {'));
   assert.match(method, /const sameThread = Boolean\(cachedItem/);
   assert.match(method, /if \(sameThread\)[\s\S]*this\.state\.selectedLetter = \{ \.\.\.currentBundle, letter: cachedItem, thread: currentThread \}/);
   assert.match(method, /if \(!this\.view\.renderLetterDetail\(this\.state\)\) this\.render\(\)/);
@@ -114,7 +115,7 @@ test('cambiar entre cartas del mismo hilo actualiza solo el detalle y conserva e
 });
 
 test('el hilo muestra todas las cartas con una única lista de navegación', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(view, /const renderThreadItem = item => \{/);
   assert.match(view, /const olderTimeline = threadItems\.slice\(0, threadBoundary\)\.map\(renderThreadItem\)/);
   assert.match(view, /const newerTimeline = threadItems\.slice\(threadBoundary\)\.map\(renderThreadItem\)/);
@@ -125,7 +126,7 @@ test('el hilo muestra todas las cartas con una única lista de navegación', asy
 
 test('un borrador nuevo no se persiste ni se crea sin texto en el cuerpo', async () => {
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const api = await read('../supabase/functions/letters-api/index.ts');
   assert.match(controller, /hasDraftBody\(body\)[\s\S]*plainTextFromHtml/);
   assert.match(controller, /const canPersist = Boolean\(this\.state\.editor\.letterId \|\| hasBody\)/);

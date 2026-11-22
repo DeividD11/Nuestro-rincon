@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
+import { readControllerSource } from './helpers/controller-source.mjs';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('las confirmaciones nativas se sustituyen por el diálogo común de la aplicación', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   const utility = await read('../assets/js/utils/dom.js');
   assert.match(controller, /showConfirmDialog/);
   assert.doesNotMatch(controller, /\b(?:window\.)?confirm\s*\(/);
@@ -18,7 +19,7 @@ test('las confirmaciones nativas se sustituyen por el diálogo común de la apli
 });
 
 test('las acciones destructivas explican el alcance y utilizan botones explícitos', async () => {
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const controller = await readControllerSource();
   assert.match(controller, /title: 'Eliminar definitivamente'/);
   assert.match(controller, /confirmLabel: 'Eliminar definitivamente'/);
   assert.match(controller, /cancelLabel: 'Mantener en Papelera'/);

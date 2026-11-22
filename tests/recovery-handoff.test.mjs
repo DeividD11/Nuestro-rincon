@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readCssBundle } from './helpers/style-source.mjs';
 import { readFile } from 'node:fs/promises';
@@ -88,7 +89,7 @@ test('registro reintentable, entrega separada de sesión y rotación autenticada
   const sql = await read('../supabase/migrations/20261119050910_idempotent_registration_recovery_handoff.sql');
   const controller = await readControllerSource();
   const session = await read('../assets/js/services/session-service.js');
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   assert.match(auth, /registration_request_receipts/);
   assert.match(auth, /register_app_user_with_invite_idempotent/);
   assert.match(auth, /resumeRegistrationFromReceipt/);
@@ -203,7 +204,7 @@ test('los errores definitivos del registro no se confunden con fallos de red y s
 
 
 test('los códigos de resultado incierto se presentan como pendientes y no como activos', async () => {
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const controller = await readControllerSource();
   assert.match(view, /const codePending = options\.codePending === true/);
   assert.match(view, /Este código se generó y se conserva en este navegador, pero el servidor todavía no ha confirmado si quedó activo/);
@@ -214,7 +215,7 @@ test('los códigos de resultado incierto se presentan como pendientes y no como 
 
 test('la pantalla del código permanece estable hasta la confirmación manual de guardado', async () => {
   const controller = await readControllerSource();
-  const view = await read('../assets/js/views/app-view.js');
+  const view = await readAppViewSource();
   const registerStart = controller.indexOf("} else if (form.id === 'register-form') {");
   const sessionReady = controller.indexOf("if (this.session.user) {", registerStart);
   const codeDisplay = controller.indexOf('this.view.renderRecoveryCode(registrationBundle ? registrationCodes', sessionReady);

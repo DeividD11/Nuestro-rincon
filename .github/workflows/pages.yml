@@ -20,20 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Pin npm to the lockfile toolchain
+        run: |
+          npm install --global npm@11.19.1
+          test "$(npm --version)" = '11.19.1'
+
       - name: Install exact dependency tree
         run: npm ci
 
       - name: Set up Deno
-        uses: denoland/setup-deno@v2
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.9.8
 
@@ -46,8 +51,14 @@ jobs:
       - name: Type-check Supabase Edge Functions
         run: npm run check:edge
 
+      - name: Test Edge Function request validation
+        run: npm run test:edge-unit
+
       - name: Run automated tests
         run: npm test
+
+      - name: Enforce frontend coverage thresholds and write LCOV report
+        run: npm run test:coverage
 
       - name: Build static site
         run: npm run build:pages
@@ -58,8 +69,17 @@ jobs:
       - name: Run axe-core WCAG 2.2 AA checks
         run: npm run test:a11y
 
+      - name: Upload frontend coverage report
+        if: always() && hashFiles('coverage/lcov.info') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: frontend-coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload verified site artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: pages-site
           path: ./_site
@@ -80,19 +100,19 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download verified site artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: pages-site
           path: ./_site
 
       - name: Configure Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload static site
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: ./_site
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e # v4.0.0

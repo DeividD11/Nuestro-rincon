@@ -18,9 +18,9 @@ La función filtra carpeta y búsqueda en PostgreSQL. Los hilos usan cursor por 
 
 ## Índices y evaluación
 
-La base ya dispone de índices compuestos para las carpetas, hilos y notificaciones, incorporados por migraciones anteriores. Antes de añadir otros, se deben recoger planes con `EXPLAIN (ANALYZE, BUFFERS)` en una branch aislada con volumen representativo. La búsqueda actual por substring de título y texto extraído de HTML puede seguir examinando muchas filas; cursor pagination elimina el coste de `OFFSET` y del recuento exacto, pero no convierte automáticamente una búsqueda de substring en una búsqueda indexada.
+La búsqueda cursor conserva la semántica de subcadena literal y normaliza el cuerpo HTML a través de `public.normalize_letter_search_body(text)`. Los comodines `%`, `_` y `\` introducidos por el usuario se escapan para que `LIKE` equivalga al filtro anterior basado en `strpos`.
 
-Una siguiente optimización podría evaluar `pg_trgm` para títulos/cuerpo normalizado o una columna/vector de búsqueda actualizado transaccionalmente. No se añade ahora porque implica medir selectividad, almacenamiento y resultados para HTML enriquecido antes de cambiar la semántica de búsqueda.
+No se crean índices GIN/GiST de búsqueda en esta migración. Consulta [`docs/LETTER_SEARCH_PERFORMANCE.md`](LETTER_SEARCH_PERFORMANCE.md) para la medición de referencia, `EXPLAIN (ANALYZE, BUFFERS)`, los índices `pg_trgm` candidatos y el procedimiento de validación con datos sintéticos en una branch aislada. La paginación por cursor elimina `OFFSET` y los recuentos exactos por página, pero no hace automáticamente barata una búsqueda por substring.
 
 ## Migración y producción
 
@@ -29,6 +29,4 @@ La función nueva se define en `supabase/migrations/20261121210000_cursor_based_
 `supabase/tests/cursor_pagination.test.sql` comprueba existencia, tipo de retorno, permisos `service_role` y propiedades del cursor/página limitada. También deben hacerse pruebas con registros que compartan timestamp, cambios concurrentes y decenas de miles de filas para validar los límites de negocio.
 
 
-## Rendimiento de búsqueda: límite conocido
 
-La búsqueda continúa usando `strpos` sobre título y cuerpo HTML normalizado. El filtro se ejecuta antes del límite de página en PostgreSQL, por lo que no se pierde una coincidencia porque una carta quede detrás de los primeros 100 resultados. Sin embargo, la operación por substring no está respaldada automáticamente por los índices de orden existentes y puede recorrer muchas filas. No se añadió un índice GIN/GiST ni se cambió la semántica de búsqueda en esta entrega. El siguiente paso debe medir consultas con `EXPLAIN (ANALYZE, BUFFERS)` sobre una branch con volumen realista; después se puede valorar `pg_trgm` sobre texto normalizado o una columna de búsqueda mantenida transaccionalmente.

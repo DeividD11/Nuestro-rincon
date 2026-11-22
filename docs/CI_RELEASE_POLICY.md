@@ -51,4 +51,4 @@ Las referencias de acciones se fijan a líneas de versión (`@vN`) y Dependabot 
 
 ## Resultado de auditoría de accesibilidad
 
-`axe-core` ejecuta reglas WCAG 2.0/2.1/2.2 A/AA en siete pantallas y dos temas. La auditoría estática de contraste analiza 22 combinaciones seleccionadas de la paleta. Ninguna de esas automatizaciones sustituye las pruebas manuales con NVDA, VoiceOver y TalkBack, que siguen siendo una condición de validación humana documentada en `docs/ACCESSIBILITY.md`.
+`axe-core` ejecuta reglas WCAG 2.0/2.1/2.2 A/AA en nueve vistas y dos temas, con escenarios adicionales de error, recuperación, Papelera y diálogo de eliminación de cuenta. Playwright comprueba además 640 y 320 píxeles CSS. La auditoría estática de contraste analiza 24 combinaciones seleccionadas de la paleta. Ninguna de esas automatizaciones sustituye las pruebas manuales con NVDA, VoiceOver y TalkBack, que siguen siendo una condición de validación humana documentada en `docs/ACCESSIBILITY.md`.

@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "linkedom": "npm:linkedom@0.18.12",
+    "web-push": "npm:web-push@4.0.0"
+  }
+}

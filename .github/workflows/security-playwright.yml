@@ -21,20 +21,30 @@ jobs:
       NR_E2E_ACCOUNT_B_PASSWORD: ${{ secrets.NR_E2E_ACCOUNT_B_PASSWORD }}
       NR_E2E_ACCOUNT_B_DISPLAY_NAME: ${{ secrets.NR_E2E_ACCOUNT_B_DISPLAY_NAME }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Pin npm to the lockfile toolchain
+        run: |
+          npm install --global npm@11.19.1
+          test "$(npm --version)" = '11.19.1'
+
       - name: Install exact dependency tree
         run: npm ci
-      - name: Validate isolated project configuration
-        shell: bash
+      - name: Validate isolated project and both accounts
         run: |
           test -n "$NR_E2E_PROJECT_REF"
           test -n "$NR_E2E_SUPABASE_URL"
           test -n "$NR_E2E_PUBLISHABLE_KEY"
+          test -n "$NR_E2E_ACCOUNT_A_USERNAME"
+          test -n "$NR_E2E_ACCOUNT_A_PASSWORD"
+          test -n "$NR_E2E_ACCOUNT_A_DISPLAY_NAME"
+          test -n "$NR_E2E_ACCOUNT_B_USERNAME"
+          test -n "$NR_E2E_ACCOUNT_B_PASSWORD"
+          test -n "$NR_E2E_ACCOUNT_B_DISPLAY_NAME"
           test "$NR_E2E_PROJECT_REF" != 'tiqbmuubpbmxqvtkcdhq'
           [[ "$NR_E2E_SUPABASE_URL" == "https://${NR_E2E_PROJECT_REF}.supabase.co" ]]
       - name: Install Playwright Chromium
@@ -46,7 +56,7 @@ jobs:
           npm run test:e2e
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: playwright-report
           path: playwright-report/

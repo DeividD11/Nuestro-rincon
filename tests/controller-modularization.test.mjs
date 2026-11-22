@@ -8,20 +8,42 @@ import { NotificationController } from '../assets/js/controllers/notification-co
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('AppController compone los métodos reales de los seis controladores especializados', async () => {
+test('AppController compone módulos de dominio, inicialización, eventos y ciclo de sesión', async () => {
   const expectedMethods = [
     'openRoute', 'prefetchRoute', 'loadMoreLetters',
     'getRegistrationRecoveryHandoff', 'continueAfterRecoverySaved', 'forceLogout',
     'openLetter', 'confirmSend', 'downloadHtml',
     'saveDraft', 'discardLetter', 'syncDraftSnapshot',
     'applyTheme', 'refreshSessions', 'checkCurrentSession',
-    'refreshNotifications', 'startNotificationPolling'
+    'refreshNotifications', 'startNotificationPolling', 'init', 'bindEvents',
+    'restoreInitialSession', 'resetPrivateSessionState', 'localDraftKeyFor', 'syncResponsiveAccessibility'
   ];
   for (const method of expectedMethods) {
     assert.equal(typeof AppController.prototype[method], 'function', `Falta método compuesto: ${method}`);
   }
   const main = await read('../assets/js/controllers/app-controller.js');
-  assert.ok(main.split('\n').length < 900, 'el controlador principal debe mantenerse por debajo de 900 líneas y delegar sus áreas especializadas');
+  assert.ok(main.split('\n').length < 120, 'el controlador principal debe limitarse a construir el contexto y componer módulos');
+  const initialization = await read('../assets/js/controllers/app-initialization-controller.js');
+  const events = await read('../assets/js/controllers/app-event-coordinator-controller.js');
+  const lifecycle = await read('../assets/js/controllers/session-lifecycle-controller.js');
+  assert.match(initialization, /async init\(\)[\s\S]*await this\.restoreInitialSession\(\)/);
+  assert.doesNotMatch(initialization, /addEventListener/);
+  assert.match(events, /root\.addEventListener\('click'/);
+  assert.match(events, /root\.addEventListener\('submit'/);
+  assert.match(lifecycle, /async restoreInitialSession\(\)/);
+  assert.match(events, /handleSubmit\.call\(this, event\)/);
+  assert.match(events, /handleClick\.call\(this, event\)/);
+  assert.match(lifecycle, /setupSessionLifecycle\(\)/);
+  assert.match(lifecycle, /restoreInitialSession\(\)/);
+  assert.match(lifecycle, /resetPrivateSessionState\(user = null\)/);
+  const submit = await read('../assets/js/controllers/app-submit-handler.js');
+  const click = await read('../assets/js/controllers/app-click-handler.js');
+  assert.ok(submit.split('\n').length > 200);
+  assert.ok(click.split('\n').length > 200);
+  assert.match(submit, /export async function handleSubmit/);
+  assert.match(click, /export async function handleClick/);
+  const view = await read('../assets/js/views/app-view.js');
+  assert.ok(view.split('\n').length < 150, 'AppView debe conservar solo el contrato de renderizado y composición');
   assert.match(main, /Object\.getOwnPropertyDescriptors\(modulePrototype\)/);
 });
 

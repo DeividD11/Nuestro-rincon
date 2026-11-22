@@ -49,10 +49,10 @@ export class NotificationController {
       if (readPendingRecovery() || !this.session?.user) return;
       this.notificationPoller = new AdaptivePoller({
         enabled: () => Boolean(this.session?.user) && !readPendingRecovery(),
-        activeIntervalMs: 2 * 60_000,
-        idleIntervalMs: 10 * 60_000,
-        idleAfterMs: 2 * 60_000,
-        minRefreshGapMs: 30_000,
+        activeIntervalMs: 30_000,
+        idleIntervalMs: 2 * 60_000,
+        idleAfterMs: 90_000,
+        minRefreshGapMs: 15_000,
         maxBackoffMs: 15 * 60_000,
         task: async () => {
           await this.refreshNotifications();

@@ -1,9 +1,11 @@
 import test from 'node:test';
+import { readAppViewSource } from './helpers/view-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { encryptRecoveryVault, decryptRecoveryVault } from '../assets/js/services/recovery-vault.js';
 import { createPendingRegistration, readPendingRecovery, clearPendingRecovery } from '../assets/js/services/recovery-handoff.js';
+import { readControllerSource } from './helpers/controller-source.mjs';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 const sampleCodes = Array.from({ length: 10 }, (_, index) => [String(index + 1).padStart(6, '0'), ...Array.from({ length: 7 }, (_, group) => (index + 1).toString(16).toUpperCase().padStart(6, '0').slice(-6))].join('-'));
@@ -74,8 +76,8 @@ test('el alta nueva inserta hashes de los diez códigos y protege su RPC', async
 
 test('la copia se entrega como bundle temporal y permite compatibilidad con una rotación anterior', async () => {
   const handoff = await read('../assets/js/services/recovery-handoff.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
-  const view = await read('../assets/js/views/app-view.js');
+  const controller = await readControllerSource();
+  const view = await readAppViewSource();
   assert.match(handoff, /createPendingRecoveryCodeBundle/);
   assert.match(handoff, /rotation_bundle/);
   assert.match(handoff, /purpose: 'registration_bundle'/);
@@ -92,8 +94,8 @@ test('el workflow diario nunca sube volcados sin cifrar a GitHub Actions artifac
   assert.match(workflow, /schedule:[\s\S]*cron: '25 7 \* \* \*'/);
   assert.match(workflow, /environment:\s*database-backups/);
   assert.match(workflow, /NR_BACKUP_DATABASE_URL:\s*\$\{\{ secrets\.NR_BACKUP_DATABASE_URL \}\}/);
-  assert.match(script, /supabase db dump --db-url/);
-  assert.doesNotMatch(script, /supabase db dump --remote=/);
+  assert.match(script, /supabase db dump --remote=\"\$NR_BACKUP_DATABASE_URL\"/);
+  assert.match(script, /read_migration_history/);
   assert.match(script, /--role-only/);
   assert.match(script, /--schema public/);
   assert.match(script, /--data-only --use-copy/);
@@ -156,8 +158,8 @@ test('los scripts de respaldo pasan la validación sintáctica Bash', async () =
 
 
 test('un reintento de alta con bundle mantiene bloqueados invitación, nombre y usuario', async () => {
-  const view = await read('../assets/js/views/app-view.js');
-  const controller = await read('../assets/js/controllers/app-controller.js');
+  const view = await readAppViewSource();
+  const controller = await readControllerSource();
   assert.match(view, /\['registration', 'registration_bundle'\]\.includes\(pending\?\.purpose\)/);
   assert.match(controller, /\['registration', 'registration_bundle'\]\.includes\(pending\?\.purpose\)/);
 });

@@ -14,21 +14,41 @@ jobs:
       NR_TEST_DATABASE_URL: ${{ secrets.NR_TEST_DATABASE_URL }}
       NR_TEST_CONFIRM_ISOLATED: 'YES'
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Pin npm to the lockfile toolchain
+        run: |
+          npm install --global npm@11.19.1
+          test "$(npm --version)" = '11.19.1'
+
       - name: Install exact dependency tree
         run: npm ci
-      - uses: supabase/setup-cli@v1
-        with:
-          version: 3.0.0
-      - name: Validate isolated database URL
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - name: Validate isolated database URL and required secrets
         env:
           PRODUCTION_PROJECT_REF: tiqbmuubpbmxqvtkcdhq
         run: |
-          node --input-type=module -e "const ref=process.env.NR_DB_TEST_PROJECT_REF; const value=process.env.NR_TEST_DATABASE_URL; if (!ref || !value || ref===process.env.PRODUCTION_PROJECT_REF) process.exit(1); const u=new URL(value); if (u.hostname !== 'db.'+ref+'.supabase.co' || u.protocol !== 'postgresql:') process.exit(1);"
+          node --input-type=module <<'NODE'
+          const ref = process.env.NR_DB_TEST_PROJECT_REF || '';
+          const raw = process.env.NR_TEST_DATABASE_URL || '';
+          if (!/^[a-z0-9]{20}$/.test(ref) || ref === process.env.PRODUCTION_PROJECT_REF) {
+            throw new Error('NR_DB_TEST_PROJECT_REF debe identificar un proyecto aislado distinto de producción.');
+          }
+          if (process.env.NR_TEST_CONFIRM_ISOLATED !== 'YES' || !raw) {
+            throw new Error('Falta confirmación explícita o NR_TEST_DATABASE_URL.');
+          }
+          const url = new URL(raw);
+          const direct = url.hostname === `db.${ref}.supabase.co`;
+          const pooler = /^[a-z0-9-]+\.pooler\.supabase\.com$/i.test(url.hostname)
+            && decodeURIComponent(url.username) === `postgres.${ref}`;
+          if (!['postgres:', 'postgresql:'].includes(url.protocol) || (!direct && !pooler) || !url.password) {
+            throw new Error('NR_TEST_DATABASE_URL no coincide con la conexión PostgreSQL del proyecto aislado.');
+          }
+          NODE
       - name: Run pgTAP security tests
         run: npm run test:db

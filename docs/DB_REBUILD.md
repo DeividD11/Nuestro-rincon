@@ -2,7 +2,7 @@
 
 ## Estado remoto observado el 21 de noviembre de 2026
 
-La lectura del proyecto remoto `tiqbmuubpbmxqvtkcdhq` mostró **23 migraciones** aplicadas. El ZIP de entrada original contenía 18 archivos SQL; la distribución actual contiene 24. En ambos casos, solo 15 corresponden a la historia remota. Faltaban las ocho migraciones iniciales del historial:
+La lectura del proyecto remoto `tiqbmuubpbmxqvtkcdhq` mostró **23 migraciones** aplicadas. El ZIP de entrada original contenía 18 archivos SQL; la distribución v25 contiene 25. En ambos casos, solo 15 corresponden a la historia remota. Faltaban las ocho migraciones iniciales del historial:
 
 ```text
 20261115071151_harden_rls_event_trigger_public_acl
@@ -23,7 +23,7 @@ Además, el ZIP contenía tres archivos locales que no coinciden con una entrada
 20261116002000_self_service_accounts_and_email_recovery.sql
 ```
 
-Las seis migraciones propuestas locales son `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql` y `20261121210000_cursor_based_letter_pagination.sql`. Ninguna aparece en las 23 entradas del ledger remoto. La inspección de solo lectura sí encontró en producción los objetos declarados por las primeras cuatro; la quinta introduce la tabla `registration_recovery_bundle_receipts` y `register_app_user_with_invite_idempotent_bundle`, y la sexta introduce `list_user_letters_cursor`; estas dos últimas siguen pendientes.
+Las siete propuestas locales del inventario v25 son `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql`, `20261121210000_cursor_based_letter_pagination.sql` y `20261121220000_authenticated_api_rate_limits_and_web_push.sql`. Ninguna aparece en las 23 entradas del ledger remoto observado el 21 de noviembre. La inspección de solo lectura de esa fecha encontró en producción RPC y objetos relacionados con varias propuestas anteriores, incluidos `registration_recovery_bundle_receipts`, `register_app_user_with_invite_idempotent_bundle`, `rotate_app_recovery_codes_bundle` y `list_user_letters_cursor`; no certifica la equivalencia íntegra de los siete archivos. Esto no demuestra que todos los efectos de cada archivo sean idénticos; deben compararse constraints, índices, triggers, definiciones y grants completos.
 
 **Consecuencia:** no ejecutes `supabase db push --remote` sobre producción con este directorio tal como está. Los nombres/timestamps antiguos no se deben inventar, renumerar ni marcar como aplicados sin verificar su contenido y su efecto.
 
@@ -40,13 +40,13 @@ Un dump actual permite reconstruir el estado de esquema, pero no recuperar los o
 
 También se incorpora el workflow manual **Export Supabase public schema (read only)**. Configura en GitHub los secretos `NR_SCHEMA_SOURCE_PROJECT_REF` y `NR_SCHEMA_SOURCE_DATABASE_URL`; deben identificar el mismo proyecto. El workflow valida que la URL corresponda al ref declarado, mediante conexión directa `db.<ref>.supabase.co` o Session Pooler con usuario `postgres.<ref>`, y genera un artefacto con `public` sin datos. Puede usarse para extraer el estado actual de producción sin aplicar cambios; trata el SQL como código interno y guárdalo en el repositorio solo después de revisarlo. El workflow no exporta credenciales ni datos de las cartas.
 
-También puedes hacerlo desde un entorno seguro y autenticado, preferentemente apuntando a una branch aislada después de comprobar el proyecto objetivo:
+También puedes hacerlo desde un entorno seguro y autenticado, preferentemente apuntando a un proyecto desechable y aislado después de comprobar el destino:
 
 ```bash
 supabase login
 supabase link --project-ref <PROJECT_REF_DE_PRUEBAS>
 supabase migration list --remote
-supabase db dump --db-url "$NR_SCHEMA_SOURCE_DATABASE_URL" --schema public --file supabase/schema/remote-public.sql
+supabase db dump --remote="$NR_SCHEMA_SOURCE_DATABASE_URL" --schema public --file supabase/schema/remote-public.sql
 ```
 
 Alternativa para representación declarativa del esquema:
@@ -55,14 +55,14 @@ Alternativa para representación declarativa del esquema:
 supabase db schema declarative generate --remote --schema public --output-dir supabase/schema/declarative
 ```
 
-Para pasar explícitamente una URL de conexión a `supabase db dump`, se utiliza `--db-url`. `--remote` identifica un proyecto/branch remoto en comandos que aceptan una referencia de plataforma; no debe confundirse con una URL PostgreSQL. La URL debe estar codificada conforme a RFC 3986. Comprueba siempre `supabase db dump --help` con la versión instalada antes de automatizar el comando.
+En Supabase CLI v3, `--remote=<ref|branch|url>` acepta una URL PostgreSQL explícita además de una referencia de proyecto o branch. Los flags `--db-url`, `--linked` y `--project-ref` siguen funcionando en v3, pero están obsoletos y se retirarán en v4. La URL debe estar codificada conforme a RFC 3986. Comprueba siempre `supabase db dump --help` con la versión instalada antes de automatizar el comando.
 
 El dump de esquema no contiene datos. `supabase db dump` excluye esquemas administrados por Supabase y esquemas de extensiones; los roles personalizados se exportan por separado con `--role-only`, y los datos con `--data-only --use-copy`. El historial interno de migraciones y los objetos de Storage API no se incluyen en el snapshot `public`. Al restaurar en otro proyecto, revisa con especial cuidado los privilegios por defecto del proyecto destino: las tablas pueden heredar grants amplios del nuevo entorno. Comprueba y revoca expresamente los grants para `anon` y `authenticated` antes de exponer el Data API.
 
 ## Restauración controlada
 
 1. Conserva un respaldo independiente del esquema y, solo si el propietario lo solicita, de los datos. El archivo `remote-public.sql` debe permanecer libre de datos personales.
-2. Crea una branch/proyecto nuevo; no reutilices producción como laboratorio.
+2. Crea un proyecto nuevo y desechable como entorno de laboratorio; no reutilices producción. La organización observada está en Free y no tiene branches creadas.
 3. Revisa extensiones, propietarios, funciones, `search_path`, `SECURITY DEFINER/INVOKER`, ACL, grants por defecto, RLS, triggers y funciones que dependen de schemas administrados.
 4. Prepara un baseline de esquema para una base vacía en una rama de trabajo. No incluyas en ese baseline la tabla interna de historial como si todas las migraciones históricas se hubieran reproducido.
 5. Restaura primero el esquema en el destino vacío y comprueba los objetos con `supabase db diff --remote` / `supabase db schema declarative generate --remote`.
@@ -78,4 +78,7 @@ La instantánea oficial `remote-public.sql` no está incluida en este ZIP porque
 
 ## Códigos de recuperación incluidos en los datos
 
-El dump de `public` incluye `user_recovery_codes` y las tablas de recibos de idempotencia, incluida `registration_recovery_bundle_receipts` cuando se aplique la migración local de conjuntos. Los valores de código en claro no se guardan en PostgreSQL, por lo que una restauración no puede volver a mostrar códigos ya entregados. La copia cifrada externa de códigos (`recovery-vault`) es un archivo separado que la persona debe conservar junto con su frase secreta; no se encuentra dentro del respaldo SQL.
+El dump de `public` incluye `user_recovery_codes` y las tablas de recibos de idempotencia, incluida `registration_recovery_bundle_receipts` si el snapshot remoto la contiene. El manifiesto conserva el historial observado como referencia, pero el restaurador no inserta ese ledger en el destino. Los valores de código en claro no se guardan en PostgreSQL, por lo que una restauración no puede volver a mostrar códigos ya entregados. La copia cifrada externa de códigos (`recovery-vault`) es un archivo separado que la persona debe conservar junto con su frase secreta; no se encuentra dentro del respaldo SQL.
+
+
+Referencia de CLI: [Migrating to Supabase CLI v3](https://supabase.com/docs/guides/local-development/cli/migrating-to-v3).
