@@ -98,7 +98,9 @@ for (const theme of themes) {
   for (const screen of ['login', 'register', 'recovery']) {
     test(`${screen} con error del servidor · tema ${theme} · WCAG 2.2 A/AA`, async ({ page }) => {
       await renderFixture(page, screen, theme, { error: 'No se pudo validar la información. Comprueba los datos e inténtalo de nuevo.' });
-      await expect(page.getByRole('alert')).toContainText('No se pudo validar la información');
+      const formError = page.locator('.form-error[role="alert"]');
+      await expect(formError).toBeVisible();
+      await expect(formError).toContainText('No se pudo validar la información');
       await expectAxeClean(page);
     });
   }

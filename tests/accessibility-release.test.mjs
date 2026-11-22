@@ -259,3 +259,24 @@ test('axe-core WCAG 2.2 AA corre en ambos temas y Playwright forma parte del gat
   assert.match(workflow, /npm run test:a11y/);
   assert.ok(workflow.indexOf('npm run test:a11y') < workflow.indexOf('actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f'));
 });
+
+test('las tarjetas de la Papelera conservan nombre visible y contraste AA en ambos temas', async () => {
+  const view = await read('../assets/js/views/correspondence-view.js');
+  const css = await read('../assets/css/accessibility.css');
+  const appCss = await read('../assets/css/app.css');
+  assert.doesNotMatch(view, /class="letter-card-main"[^>]*aria-label=/);
+  assert.match(view, /class="letter-card-main"[^>]*data-letter-id=/);
+  assert.match(view, /sanitizeRichHtml\(letter\.body \|\| ''\)/);
+  assert.match(view, /sanitizeRichHtml\(item\.body \|\| ''\)/);
+  assert.doesNotMatch(view, /\bfmtBody\b/);
+  assert.match(appCss, /\.status-pill\{[^}]*background:#f2e8df;color:#80513f\}/);
+  assert.match(appCss, /\.status-pill\.unread\{background:#f4dfd8;color:#8c4c40\}/);
+  assert.match(css, /html\[data-theme="dark"\] \.letter-meta time\s*\{\s*color:\s*#c7b6aa;\s*\}/);
+});
+
+test('los escenarios de error del servidor identifican el mensaje del formulario y no el anunciador global', async () => {
+  const source = await read('../tests/e2e/accessibility.spec.mjs');
+  assert.match(source, /page\.locator\('\.form-error\[role="alert"\]'\)/);
+  assert.doesNotMatch(source, /page\.getByRole\('alert'\)\.toContainText/);
+});
+

@@ -75,6 +75,13 @@ Los recorridos de recuperación y eliminación deben usar **cuentas de prueba en
 - Los cambios de `tools/contrast-audit.mjs` son una auditoría de paleta, no una medición de cada píxel de la aplicación.
 - La automatización en Chromium no equivale a compatibilidad certificada en Firefox, Safari o Chrome móvil.
 
+### Regresiones detectadas y corregidas en la suite
+
+- Las tarjetas de carta exponen el nombre accesible a partir del texto visible, sin un `aria-label` que lo sustituya y provoque `label-content-name-mismatch`.
+- Las etiquetas de estado normales y de no leído usan primeros planos con contraste AA sobre sus fondos claros, y las fechas de las tarjetas tienen un color secundario legible también en el tema oscuro.
+- El detalle y el hilo de una carta representan el contenido con `sanitizeRichHtml`, la misma lista blanca usada por el editor, evitando referencias a un formateador inexistente.
+- Los tests de errores apuntan al mensaje `.form-error[role="alert"]` y no al anunciador global vacío, que también tiene el rol `alert` por diseño.
+
 ## Ejecución local
 
 ```bash
