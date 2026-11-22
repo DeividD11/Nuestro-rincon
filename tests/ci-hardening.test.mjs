@@ -59,3 +59,9 @@ test('la guía describe la protección de main y el check de verificación corre
   assert.match(doc, /Verify frontend and Edge Functions/);
   assert.match(doc, /no se configura desde el ZIP/i);
 });
+
+test('el test de streaming usa RequestInit compatible con Deno', async () => {
+  const source = await read('../supabase/functions/_shared/core.test.ts');
+  assert.match(source, /body:\s*stream/);
+  assert.doesNotMatch(source, /\bduplex\s*:/, 'Deno RequestInit no debe recibir la propiedad específica de Node duplex');
+});

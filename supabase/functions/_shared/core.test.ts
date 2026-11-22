@@ -54,7 +54,7 @@ Deno.test('readJson corta un stream grande aunque no anuncie Content-Length', as
     }
   });
   const request = new Request('https://unit.test/functions/v1/letters-api', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: stream, duplex: 'half'
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: stream
   });
   await expectCode(() => readJson(request), 'PAYLOAD_TOO_LARGE');
 });
