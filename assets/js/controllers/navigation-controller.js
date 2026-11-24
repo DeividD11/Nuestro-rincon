@@ -19,6 +19,10 @@ export class NavigationController {
         if (shouldFocus && this.state.route === route) this.focusPageHeading();
       };
       const previousRoute = this.state.route;
+      // La búsqueda es efímera: no se conserva al salir de una sección ni al volver a ella.
+      window.clearTimeout(this.searchTimer);
+      this.searchRequestId = (this.searchRequestId || 0) + 1;
+      this.state.search = '';
       const allowed = new Set(['home','inbox','sent','write','drafts','favorites','archive','trash','letter','notifications','settings']);
       if (!allowed.has(route) || route === 'letter') route = 'home';
   
@@ -28,6 +32,16 @@ export class NavigationController {
         window.clearTimeout(this.autosaveTimer);
         const snapshot = { ...this.state.editor, ...this.readEditorFromDom() };
         const storageKey = this.localDraftKey || this.localDraftKeyFor(snapshot.letterId ? `letter:${snapshot.letterId}` : 'new');
+        // Representa inmediatamente el borrador recién abandonado. La lista no
+        // espera a IndexedDB ni a la creación remota para volver a mostrarlo.
+        if (route === 'drafts' && !snapshot.parentLetterId && (snapshot.letterId || this.hasDraftBody(snapshot.body))) {
+          this.state.localDraftPreview = {
+            ...snapshot, id: snapshot.letterId || `local:${snapshot.creationRequestId}`,
+            localDraftKey: storageKey, status: 'draft', localOnly: !snapshot.letterId,
+            updated_at: snapshot.savedAt || new Date().toISOString(),
+            created_at: snapshot.savedAt || new Date().toISOString()
+          };
+        }
         this.state.editor = null;
         this.localDraftKey = storageKey;
         // Entrar y salir del editor sin escribir el cuerpo no genera un borrador.
@@ -129,7 +143,7 @@ export class NavigationController {
 
     routeCacheKey(route) {
       const accountId = this.session?.user?.id || 'guest';
-      return `${route}:${accountId}:${['inbox','sent','drafts','favorites','archive','trash'].includes(route) ? this.state.search : ''}`;
+      return `${route}:${accountId}`;
     }
 
     uniqueLetters(items = []) {
@@ -215,6 +229,10 @@ export class NavigationController {
         };
       } else if (['inbox','sent','drafts','favorites','archive','trash'].includes(route)) {
         this.state.letters = this.uniqueLetters(data.letters?.items || []);
+        if (route === 'drafts' && this.state.localDraftPreview?.letterId
+          && this.state.letters.some(item => String(item.id) === String(this.state.localDraftPreview.letterId))) {
+          this.state.localDraftPreview = null;
+        }
         this.state.pagination = {
           cursor: data.letters?.nextCursor || null,
           loadedCount: Number(data.letters?.loaded ?? data.letters?.items?.length ?? 0),
@@ -231,6 +249,24 @@ export class NavigationController {
         };
       } else if (route === 'settings') {
         this.state.settings = { ...this.state.settings, ...(data.settings?.settings || {}) };
+        const previousProfile = this.state.profile || { avatarUrl: null, avatarPath: null };
+        const incomingProfile = data.settings?.profile || previousProfile;
+        const sameAvatarPath = Boolean(previousProfile.avatarPath)
+          && String(previousProfile.avatarPath) === String(incomingProfile.avatarPath || '');
+        const canReuseAvatarImage = sameAvatarPath
+          && (Boolean(previousProfile.previewUrl) || this.view?.avatarNodeCache?.hasSidebarImage?.(previousProfile));
+        this.state.profile = sameAvatarPath
+          ? {
+              ...incomingProfile,
+              // No renovar una imagen que ya está cargando o decodificada; si
+              // el nodo desapareció o falló, aceptar la nueva URL firmada.
+              avatarUrl: canReuseAvatarImage
+                ? (previousProfile.avatarUrl || incomingProfile.avatarUrl || null)
+                : (incomingProfile.avatarUrl || previousProfile.avatarUrl || null),
+              previewUrl: previousProfile.previewUrl || null
+            }
+          : { ...incomingProfile, previewUrl: incomingProfile.previewUrl || null };
+        this.syncAvatarFromProfile(previousProfile, this.state.profile);
         this.state.sessions = data.sessions?.sessions || [];
         this.state.invitation = {
           ...(data.invitation || {}),
@@ -274,6 +310,20 @@ export class NavigationController {
       this.view.renderShell(this.state);
       this.syncResponsiveAccessibility?.();
       this.observePaginationSentinel();
+      this.hydrateLetterStampPreviews?.();
+    }
+
+    renderListResultsOnly() {
+      const listRoutes = new Set(['inbox', 'sent', 'drafts', 'favorites', 'archive', 'trash']);
+      if (!listRoutes.has(this.state.route)) return false;
+      const container = this.root.querySelector('#letter-list-results');
+      if (!container || typeof this.view.renderListResults !== 'function') return false;
+      container.innerHTML = this.view.renderListResults(this.state);
+      container.classList.remove('is-searching');
+      container.setAttribute('aria-busy', 'false');
+      this.observePaginationSentinel();
+      this.hydrateLetterStampPreviews?.();
+      return true;
     }
 
     renderCurrentRoute() {
@@ -281,11 +331,13 @@ export class NavigationController {
       this.state.pendingLetterActions = this.pendingLetterActions;
       if (this.state.route === 'letter' && this.view.renderLetterDetail(this.state)) {
         this.observePaginationSentinel();
+        this.hydrateLetterStampPreviews?.();
         return;
       }
       this.view.renderShell(this.state);
       this.syncResponsiveAccessibility?.();
       this.observePaginationSentinel();
+      this.hydrateLetterStampPreviews?.();
     }
 
     observePaginationSentinel() {
@@ -312,7 +364,7 @@ export class NavigationController {
       const search = this.state.search;
       const cursor = pagination.cursor;
       this.state.pagination = { ...pagination, loading: true };
-      this.renderCurrentRoute();
+      this.renderListResultsOnly();
       try {
         const page = await this.repository.list(route, search, cursor, pagination.limit || 40);
         if (this.state.route !== route || this.session?.user?.id !== userId || this.state.search !== search) return;
@@ -324,12 +376,10 @@ export class NavigationController {
           limit: page.limit || pagination.limit || 40,
           hasMore: Boolean(page.hasMore), loading: false
         };
-        const scrollY = window.scrollY;
-        this.renderCurrentRoute();
-        window.scrollTo(0, scrollY);
+        this.renderListResultsOnly();
       } catch (error) {
         this.state.pagination = { ...pagination, loading: false };
-        this.renderCurrentRoute();
+        this.renderListResultsOnly();
         showToast(error.message || 'No se pudieron cargar más cartas.', 'error');
       }
     }

@@ -1,8 +1,52 @@
 # Estado del proyecto Supabase
 
-> **Estado remoto vigente:** consulta la actualización de reconciliación v23 al final de este documento. Las secciones intermedias documentan revisiones previas; cuando difieran, prevalece v23 para el estado remoto. El inventario del código fuente local se actualizó por separado con el paquete v25 del 22 de noviembre de 2026.
+## Actualización remota v35 — bucket privado y carga de medios (24 de noviembre de 2026)
 
-Baseline histórico iniciado el 19 de noviembre de 2026 y ampliado con lecturas de solo consulta posteriores. La última actualización consolidada es la sección “Actualización de reconciliación de solo lectura — 21 de noviembre de 2026 (v23)”.
+La comprobación del frontend y de los registros de Storage identificó que el bucket `private-media` no existía cuando comenzaron las pruebas de carga. Se creó de forma privada y se registró en el historial con `20261124052017_ensure_private_media_bucket`. La configuración fue consultada después de aplicar la migración: `public=false`, 5 MiB y MIME `image/jpeg`, `image/png` y `image/webp`.
+
+`letters-api` se desplegó como **v11 ACTIVE**. Conserva la importación ESM de `web-push@4.0.0` mediante exports nombrados (`sendNotification` y `setVapidDetails`), añade diagnósticos de errores de Storage sin registrar contenido privado y mantiene las acciones de avatar, imágenes de cartas y revocación masiva. `auth-api` permanece en **v11 ACTIVE**. Ambas funciones validan las sesiones propias; `verify_jwt=false` se mantiene por compatibilidad con las sesiones opacas de la aplicación.
+
+| Elemento | Estado comprobado el 24-11-2026 |
+|---|---|
+| `letters-api` | ACTIVE, v11; import ESM nombrado y flujo privado de medios |
+| `auth-api` | ACTIVE, v11; sin cambios |
+| Historial remoto | 25 migraciones; última `20261124052017_ensure_private_media_bucket` |
+| `private-media` | Existe, privado, límite 5 MiB, JPEG/PNG/WebP |
+| Carga desde navegador | Storage registró URL firmada POST 200, upload PUT 200 y comprobación HEAD 200 |
+| Perfil | La escritura de `avatar_path` respondió 200; no se inspeccionaron contenidos de cartas ni imágenes privadas |
+| `user_profiles.avatar_path` | Columna y constraint existentes antes de esta entrega |
+| Revocación global | `revoke_other_app_sessions` aplicado y verificado; solo `service_role` puede ejecutarlo |
+
+El inventario local contiene 28 migraciones/archivos SQL (28 archivos SQL locales): 17 timestamps coinciden con el ledger, tres archivos son legacy/no canónicos y ocho propuestas anteriores continúan pendientes de reconciliación. La antigua propuesta `20261123193000_private_media_and_profile_avatars.sql` sigue sin una entrada homónima en el ledger; sus objetos de perfil ya existían antes y la nueva migración solo registra la configuración del bucket. No vuelvas a aplicar esa propuesta antigua ni ejecutes `supabase db push` para resolver la deriva automáticamente.
+
+Las cargas de avatar observadas demuestran que el bucket y el endpoint de upload aceptan el archivo. La inserción de imágenes en el cuerpo de una carta y la visualización cruzada desde la segunda cuenta requieren una comprobación manual con las dos cuentas reales; no se afirma que esas pruebas funcionales ya se hayan completado.
+
+---
+
+## Antecedente v34 — función de medios y revocación atómica (23 de noviembre de 2026)
+
+Esta actualización incorpora comprobaciones de solo lectura y los cambios coordinados que se aplicaron mediante el conector de Supabase. El proyecto `tiqbmuubpbmxqvtkcdhq` respondió `ACTIVE_HEALTHY` (PostgreSQL 17, `us-west-2`).
+
+| Elemento | Estado remoto comprobado el 23-11-2026 | Acción v34 |
+|---|---|---|
+| `auth-api` | ACTIVE, v11 | Sin cambios |
+| `letters-api` | ACTIVE, v9 | Desplegada desde el código v34; `verify_jwt=false` se conserva porque `requireSession` valida las sesiones opacas propias |
+| `public.user_profiles.avatar_path` | La columna existe y tiene `user_profiles_avatar_path_owner_ck` | No se reejecutó la migración histórica local que declara esa columna |
+| Storage `private-media` | No existía al inicio de la revisión; no se realizó una carga real | La v9 comprueba/crea/configura el bucket por Storage API en la primera carga autenticada; privado, 5 MiB, JPEG/PNG/WebP |
+| Revocación de sesiones | RPC `revoke_other_app_sessions` verificado | Migración `20261123205422_revoke_other_app_sessions_atomically.sql` aplicada; revocación de sesiones, refresh tokens y push subscriptions en una transacción |
+| Índice | Faltaba índice de la FK `push_subscriptions.session_id` | `push_subscriptions_session_id_idx` creado y comprobado |
+| Ledger remoto | 24 migraciones registradas | 27 archivos SQL locales: 16 timestamps comunes, tres legacy/no canónicos y ocho propuestas sin entrada homónima |
+
+Las ocho propuestas locales todavía sin entrada homónima en el ledger son `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql`, `20261121210000_cursor_based_letter_pagination.sql`, `20261121220000_authenticated_api_rate_limits_and_web_push.sql` y `20261123193000_private_media_and_profile_avatars.sql`. No vuelvas a aplicar la última sin reconciliarla: sus objetos de esquema (`avatar_path` y constraint) ya estaban presentes en producción antes de esta actualización. Ocho timestamps del ledger remoto siguen sin archivo SQL local homónimo.
+
+La nueva función `revoke_other_app_sessions(uuid,uuid,timestamptz)` fue comprobada como `SECURITY INVOKER`, sin permiso `EXECUTE` para `anon` ni `authenticated`, y con permiso para `service_role`. La prueba de humo con UUID no existentes devolvió `0`, sin modificar sesiones reales. La función `letters-api` v9 se desplegó y el inventario de Edge Functions confirma versión ACTIVE v9; `auth-api` continúa en v11.
+
+El bucket `private-media` se gestiona exclusivamente mediante Storage API, no mediante DML sobre `storage.buckets`. La v9 verifica el bucket y lo crea o ajusta a privado, máximo 5 MiB y MIME JPEG/PNG/WebP antes de generar la URL de carga. La existencia y subida de un objeto real quedan pendientes de una prueba autenticada desde la aplicación.
+
+## Proyecto
+> **Estado remoto:** usa la actualización remota v35 al inicio de este documento. Las secciones posteriores son antecedentes históricos y sus cifras ya no describen el estado vigente.
+
+Baseline histórico iniciado el 19 de noviembre de 2026 y ampliado con lecturas de solo consulta posteriores.
 
 ## Proyecto
 
@@ -19,13 +63,13 @@ Baseline histórico iniciado el 19 de noviembre de 2026 y ampliado con lecturas 
 | Función | Estado | Versión | Verificación JWT del gateway |
 |---|---:|---:|---:|
 | `auth-api` | ACTIVE | 11 | false |
-| `letters-api` | ACTIVE | 8 | false |
+| `letters-api` | ACTIVE | 11 | false |
 
 Las dos funciones validan la sesión propia en el cuerpo del backend. `verify_jwt=false` no significa que las operaciones privadas queden sin autenticación. En `auth-api` v3 y `letters-api` v3 se corrigió el preflight CORS: `OPTIONS` devuelve `204` con cuerpo nulo. Las versiones anteriores intentaban responder `204` con el texto `ok`, lo que producía HTTP 500 y se manifestaba en el navegador como un error genérico de red.
 
 ## Migraciones remotas
 
-El historial remoto consultado tenía 23 entradas en la lectura del 21 de noviembre. En el inventario local v25 hay siete propuestas SQL posteriores que no aparecen en el ledger; la inspección remota del 21 de noviembre encontró objetos relacionados con propuestas anteriores, sin certificar equivalencia completa de cada archivo. Las últimas registradas son:
+El historial remoto consultado el 24 de noviembre tiene 25 entradas; la última es `20261124052017_ensure_private_media_bucket`. En el inventario local v34 hay ocho propuestas SQL posteriores que no aparecen en el ledger; la inspección remota del 21 de noviembre encontró objetos relacionados con propuestas anteriores, sin certificar equivalencia completa de cada archivo. Las últimas registradas son:
 
 - `20261116045159_lock_down_direct_data_api`
 - `20261116045242_self_service_accounts_and_email_recovery` (histórica; las rutas de email fueron sustituidas por registro sin email/código de recuperación)

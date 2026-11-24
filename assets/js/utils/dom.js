@@ -1,10 +1,12 @@
+import { APP_CONFIG } from '../config/app-config.js';
+
 export function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[char]);
 }
 
-const ALLOWED_TAGS = new Set(['P', 'DIV', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'UL', 'OL', 'LI', 'BLOCKQUOTE']);
+const ALLOWED_TAGS = new Set(['P', 'DIV', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'IMG']);
 const ALLOWED_ALIGN = new Set(['left', 'center', 'right', 'justify']);
 
 /** Convierte HTML del editor en una lista blanca antes de mostrarlo o enviarlo. */
@@ -14,6 +16,9 @@ export function sanitizeRichHtml(html = '') {
   const cleanNode = node => {
     if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '');
     if (node.nodeType !== Node.ELEMENT_NODE) return document.createDocumentFragment();
+    // El placeholder temporal de carga no forma parte del contenido persistido.
+    // Se elimina completo (incluido su texto) al guardar mientras sube el archivo.
+    if (node.hasAttribute?.('data-letter-image-uploading')) return document.createDocumentFragment();
     const tag = node.tagName.toUpperCase();
     const fragment = document.createDocumentFragment();
     if (!ALLOWED_TAGS.has(tag)) {
@@ -21,6 +26,28 @@ export function sanitizeRichHtml(html = '') {
       return fragment;
     }
     const clean = document.createElement(tag.toLowerCase());
+    if (tag === 'IMG') {
+      const path = String(node.getAttribute('data-image-path') || '');
+      // No mostrar ni persistir nombres locales de archivos como texto alternativo.
+      const alt = 'Imagen adjunta';
+      if (!/^letters\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(?:jpg|jpeg|png|webp)$/i.test(path)) return fragment;
+      clean.setAttribute('data-image-path', path);
+      clean.setAttribute('alt', alt || 'Imagen adjunta');
+      const source = String(node.getAttribute('src') || '');
+      if (source.startsWith('blob:')) {
+        clean.setAttribute('src', source);
+      } else {
+        try {
+          const url = new URL(source);
+          const origin = new URL(APP_CONFIG.supabaseUrl).origin;
+          if (url.origin === origin && url.pathname.startsWith('/storage/v1/object/sign/private-media/')) clean.setAttribute('src', url.href);
+        } catch { /* La imagen se vuelve a firmar al abrir la carta. */ }
+      }
+      clean.setAttribute('loading', 'lazy');
+      clean.setAttribute('decoding', 'async');
+      fragment.append(clean);
+      return fragment;
+    }
     if (node.hasAttribute('style')) {
       const align = node.style.textAlign.toLowerCase();
       if (ALLOWED_ALIGN.has(align)) clean.style.textAlign = align;
@@ -67,6 +94,11 @@ export function showConfirmDialog({
   const appSurface = document.querySelector('.app-root');
   const previousAriaHidden = appSurface?.getAttribute('aria-hidden');
   const previousOverflow = document.body.style.overflow;
+  const previousPosition = document.body.style.position;
+  const previousTop = document.body.style.top;
+  const previousWidth = document.body.style.width;
+  const previousHtmlOverflow = document.documentElement.style.overflow;
+  const scrollY = window.scrollY || window.pageYOffset || 0;
 
   const backdrop = document.createElement('div');
   backdrop.className = 'nr-dialog-backdrop';
@@ -121,7 +153,14 @@ export function showConfirmDialog({
   dialog.append(actions);
   backdrop.append(dialog);
 
+  document.documentElement.style.overflow = 'hidden';
+  document.documentElement.classList.add('modal-open');
+  document.body.style.position = 'fixed';
+  document.body.style.top = `-${scrollY}px`;
+  document.body.style.width = '100%';
   document.body.style.overflow = 'hidden';
+  backdrop.addEventListener('touchmove', event => { if (!event.target?.closest?.('.nr-dialog')) event.preventDefault(); }, { passive: false });
+  backdrop.addEventListener('wheel', event => { if (!event.target?.closest?.('.nr-dialog')) event.preventDefault(); }, { passive: false });
   appSurface?.setAttribute('aria-hidden', 'true');
   document.body.append(backdrop);
 
@@ -137,7 +176,15 @@ export function showConfirmDialog({
     cancelButton.removeEventListener('click', onCancel);
     confirmButton.removeEventListener('click', onConfirm);
     backdrop.remove();
+    document.documentElement.classList.remove('modal-open');
+    document.documentElement.style.overflow = previousHtmlOverflow;
     document.body.style.overflow = previousOverflow;
+    document.body.style.position = previousPosition;
+    document.body.style.top = previousTop;
+    document.body.style.width = previousWidth;
+    // Restaurar sin animación: el documento global usa scroll-behavior:smooth.
+    // La restauración de un diálogo no debe animar la página por detrás.
+    window.scrollTo({ left: 0, top: scrollY, behavior: 'instant' });
     if (appSurface) {
       if (previousAriaHidden === null) appSurface.removeAttribute('aria-hidden');
       else appSurface.setAttribute('aria-hidden', previousAriaHidden);

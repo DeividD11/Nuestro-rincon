@@ -1,6 +1,8 @@
 export class AppState {
   constructor() {
     this.user = null;
+    this.profile = { avatarUrl: null, avatarPath: null };
+    this.localDraftPreview = null;
     this.route = 'home';
     this.dashboard = { received: 0, unread: 0, sent: 0, drafts: 0, recent: [] };
     this.letters = [];

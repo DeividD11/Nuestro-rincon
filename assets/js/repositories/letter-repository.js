@@ -19,6 +19,12 @@ export class LetterRepository {
   saveSettings(settings) { return this.api.letters('settings:update', settings); }
   sessions() { return this.api.letters('sessions'); }
   revokeSession(sessionId) { return this.api.letters('session:revoke', { sessionId }); }
+  revokeOtherSessions() { return this.api.letters('sessions:revoke-others'); }
+  prepareMediaUpload(data) { return this.api.letters('media:prepare-upload', data); }
+  signLetterImage(data) { return this.api.letters('media:sign-letter-image', data); }
+  signLetterThumbnail(data) { return this.api.letters('media:sign-letter-thumbnail', data); }
+  setAvatar(path) { return this.api.letters('profile:avatar:set', { path }); }
+  removeAvatar() { return this.api.letters('profile:avatar:remove'); }
   pushConfig() { return this.api.letters('push:config'); }
   subscribePush(subscription) { return this.api.letters('push:subscribe', { subscription, userAgent: navigator.userAgent }); }
   unsubscribePush(endpoint) { return this.api.letters('push:unsubscribe', { endpoint }); }

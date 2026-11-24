@@ -84,6 +84,20 @@ export async function syncDraftSnapshot(controller, initialSnapshot, initialStor
       try { localStorage.removeItem(controller.emergencyDraftStorageKey()); } catch {}
     }
     controller.invalidateRouteCache();
+    const preview = controller.state.localDraftPreview;
+    if (preview && (preview.creationRequestId === persisted.creationRequestId || preview.localDraftKey === currentStorageKey)) {
+      // Mantén la tarjeta optimista hasta que la consulta remota la devuelva;
+      // así no desaparece entre el ACK de guardado y la actualización de lista.
+      controller.state.localDraftPreview = {
+        ...preview, id: draft.id, letterId: draft.id, localDraftKey: targetKey,
+        localOnly: false, pendingSync: false, saved: true,
+        updated_at: draft.updated_at || new Date().toISOString()
+      };
+      if (controller.state.route === 'drafts') {
+        const refreshId = ++controller.routeRequestId;
+        controller.refreshRouteData('drafts', controller.routeCacheKey('drafts'), refreshId, true).catch(() => {});
+      }
+    }
     return { status: 'saved', draft };
   };
   

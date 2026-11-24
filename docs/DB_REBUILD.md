@@ -1,8 +1,18 @@
 # Reconstrucción de Supabase desde cero
 
-## Estado remoto observado el 21 de noviembre de 2026
+## Actualización local v36 — medios y miniaturas (24 de noviembre de 2026)
 
-La lectura del proyecto remoto `tiqbmuubpbmxqvtkcdhq` mostró **23 migraciones** aplicadas. El ZIP de entrada original contenía 18 archivos SQL; la distribución v25 contiene 25. En ambos casos, solo 15 corresponden a la historia remota. Faltaban las ocho migraciones iniciales del historial:
+Esta actualización no añade migraciones SQL ni modifica el esquema remoto. Reduce el tamaño máximo de los adjuntos en el frontend y añade la firma opcional `firstImageUrl` a las respuestas de lista desde la fuente local de `letters-api`. El frontend v39 también puede obtener la miniatura del borrador a través de la operación autenticada `media:sign-letter-image` ya disponible en `letters-api` v11, incluso si el resumen no contiene `firstImageUrl`. El despliegue de `firstImageUrl` es una optimización y no un requisito para el sello de Borradores. No ejecutes `supabase db push` ni vuelvas a aplicar migraciones históricas por causa de esta actualización.
+
+## Actualización local v35: revocación, almacenamiento privado y medios
+
+Las propuestas locales del inventario v35 suman ocho propuestas: `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql`, `20261121210000_cursor_based_letter_pagination.sql`, `20261121220000_authenticated_api_rate_limits_and_web_push.sql` y `20261123193000_private_media_and_profile_avatars.sql`. Esta última declara `user_profiles.avatar_path` y una restricción de formato; esos objetos ya existían en producción durante la revisión v34, por lo que no debe repetirse su DDL sin reconciliación. El bucket `private-media` se registra en la migración aplicada `20261124052017_ensure_private_media_bucket.sql`: privado, máximo 5 MiB y MIME `image/jpeg`, `image/png` y `image/webp`. No realices escrituras ad hoc sobre `storage.objects` ni crees políticas públicas.
+
+La migración local `20261123193000_private_media_and_profile_avatars.sql` no debe volver a ejecutarse sin reconciliarla: en producción ya existían `user_profiles.avatar_path` y su restricción de propietario/formato. El nuevo archivo `20261123205422_revoke_other_app_sessions_atomically.sql` sí se aplicó en producción y quedó en el ledger como migración número 24; crea el RPC atómico y el índice para la FK de push subscriptions. `letters-api` v9 está desplegada. El bucket `private-media` se prepara de forma privada desde Storage API al realizar la primera carga autenticada; no se gestiona mediante DML SQL. Aun así, la carga real y la prueba entre dos cuentas deben completarse desde la aplicación.
+
+## Antecedentes históricos: estado remoto observado el 21 de noviembre de 2026
+
+La lectura del proyecto remoto `tiqbmuubpbmxqvtkcdhq` mostró **23 migraciones** aplicadas en aquella fecha. La actualización v35, con 25 entradas actuales, está al principio de `REMOTE_BASELINE.md`. El ZIP de entrada original contenía 18 archivos SQL; la distribución v25 contiene 25. En ambos casos, solo 15 corresponden a la historia remota. Faltaban las ocho migraciones iniciales del historial:
 
 ```text
 20261115071151_harden_rls_event_trigger_public_acl
@@ -23,7 +33,7 @@ Además, el ZIP contenía tres archivos locales que no coinciden con una entrada
 20261116002000_self_service_accounts_and_email_recovery.sql
 ```
 
-Las siete propuestas locales del inventario v25 son `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql`, `20261121210000_cursor_based_letter_pagination.sql` y `20261121220000_authenticated_api_rate_limits_and_web_push.sql`. Ninguna aparece en las 23 entradas del ledger remoto observado el 21 de noviembre. La inspección de solo lectura de esa fecha encontró en producción RPC y objetos relacionados con varias propuestas anteriores, incluidos `registration_recovery_bundle_receipts`, `register_app_user_with_invite_idempotent_bundle`, `rotate_app_recovery_codes_bundle` y `list_user_letters_cursor`; no certifica la equivalencia íntegra de los siete archivos. Esto no demuestra que todos los efectos de cada archivo sean idénticos; deben compararse constraints, índices, triggers, definiciones y grants completos.
+Las siete propuestas locales del inventario v25, en aquella revisión histórica, eran `20261119064344_auth_attempt_rate_limits.sql`, `20261119090000_shared_letter_purge_and_reply_guard.sql`, `20261120173200_fix_orphaned_purge_and_list_pagination.sql`, `20261120235900_transactional_profile_rename.sql`, `20261121200000_recovery_code_bundles.sql`, `20261121210000_cursor_based_letter_pagination.sql` y `20261121220000_authenticated_api_rate_limits_and_web_push.sql`. Ninguna aparece en las 23 entradas del ledger remoto observado el 21 de noviembre. La inspección de solo lectura de esa fecha encontró en producción RPC y objetos relacionados con varias propuestas anteriores, incluidos `registration_recovery_bundle_receipts`, `register_app_user_with_invite_idempotent_bundle`, `rotate_app_recovery_codes_bundle` y `list_user_letters_cursor`; no certifica la equivalencia íntegra de los siete archivos. Esto no demuestra que todos los efectos de cada archivo sean idénticos; deben compararse constraints, índices, triggers, definiciones y grants completos.
 
 **Consecuencia:** no ejecutes `supabase db push --remote` sobre producción con este directorio tal como está. Los nombres/timestamps antiguos no se deben inventar, renumerar ni marcar como aplicados sin verificar su contenido y su efecto.
 

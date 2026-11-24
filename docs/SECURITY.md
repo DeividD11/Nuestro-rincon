@@ -29,6 +29,9 @@
 - Los borradores nuevos usan un hilo provisional privado sin destinatario; al enviar, el backend vincula la otra cuenta activa. Los borradores no se comparten con la segunda cuenta hasta el envío.
 - Preferencias de apariencia limitadas a `light`, `dark` y `system`; el tema se valida en backend y se persiste por cuenta.
 - Sanitización HTML del contenido de cartas mediante lista permitida en navegador y servidor.
+- Las imágenes de cartas y avatares usan el bucket privado `private-media`. Las rutas se almacenan en PostgreSQL; el navegador solo recibe URLs firmadas de duración limitada. La Edge Function valida propietario, carta, estado y prefijo antes de emitir URLs. La clave de servicio no llega al cliente.
+- Las imágenes se rasterizan en el navegador, limitan tamaño/resolución y solo admiten JPEG, PNG o WebP. El sanitizador conserva únicamente `img` con `data-image-path` que respete el patrón de ruta; el servidor vuelve a validar que la imagen pertenezca a la carta y al remitente antes de firmar su lectura.
+- El endpoint `sessions:revoke-others` excluye explícitamente la sesión actual, revoca las demás sesiones y sus refresh tokens, y elimina sus suscripciones push. El evento entre pestañas hace que los otros identificadores de sesión cierren su estado local.
 - Respuestas API con `no-store`, `nosniff` y `no-referrer`.
 
 ## Limitaciones explícitas
@@ -43,6 +46,12 @@
 - La credencial privada inyectada por Supabase permite acceso de servicio; una vulnerabilidad de autorización en una Edge Function sería crítica.
 - PBKDF2 es una alternativa compatible con Web Crypto, no Argon2id.
 - La suite dinámica ampliada de dos cuentas, pgTAP y Playwright debe ejecutarse contra un Supabase aislado; no se han ejecutado en producción ni en esta revisión, y el entorno local no dispone de Deno/psql ni credenciales de branch. El paquete incluye los escenarios y la configuración para realizarlas. No se han ejecutado pruebas de penetración ni una auditoría dinámica XSS completa.
+
+## Almacenamiento de archivos y ciclo de vida
+
+El bucket `private-media` debe permanecer privado y permitir solo `image/jpeg`, `image/png` y `image/webp`, con un máximo de 5 MiB por objeto. No se crean políticas públicas: las operaciones las firma `letters-api` con la credencial privada inyectada por Supabase, después de comprobar la sesión propia y la pertenencia al contenido. La migración `20261123193000_private_media_and_profile_avatars.sql` añade `user_profiles.avatar_path`; el bucket se crea/actualiza desde Dashboard o Storage API, nunca mediante escritura SQL a `storage.buckets`. Consulta [`MEDIA_AND_AVATARS.md`](MEDIA_AND_AVATARS.md).
+
+Las URLs firmadas de lectura duran 24 horas y funcionan como credenciales temporales; no deben publicarse ni registrarse en logs. El proyecto local aún no cifra imágenes de extremo a extremo y no incorpora un recolector de objetos huérfanos.
 
 ## Operación
 

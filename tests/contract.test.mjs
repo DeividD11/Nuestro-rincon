@@ -73,7 +73,8 @@ test('la instantánea del esquema se obtiene del historial real y no de un esque
   const projectReadme = await read('../README.md');
   assert.match(schemaReadme, /supabase db dump --remote="\$NR_SCHEMA_SOURCE_DATABASE_URL"/);
   assert.doesNotMatch(schemaReadme, /supabase db dump --linked/);
-  assert.match(projectReadme, /23 migraciones/);
+  assert.match(projectReadme, /25 migraciones/);
+  assert.match(projectReadme, /letters-api` v11/);
 });
 
 

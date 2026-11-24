@@ -1,4 +1,5 @@
-import webPush from 'web-push';
+import { sendNotification, setVapidDetails } from 'web-push';
+import { createPrivateUploadUrl, createPrivateReadUrl, createPrivateThumbnailUrl, createPrivateDisplayUrl, createPrivateAvatarUrl, privateObjectExists, deletePrivateObject } from '../_shared/storage.ts';
 import {
   corsHeaders, dbRequest, errorStatus, jsonResponse, nowIso, patchRows,
   readJson, requireSession, rpc, sanitizeRichHtml, selectOne, selectCursorPageRows, selectRows, sha256Hex
@@ -43,7 +44,7 @@ function parsePushEndpoint(value: unknown): string {
 function actionRateGroup(action: string): 'letter_list' | 'read' | 'write' | 'security' {
   if (action === 'list') return 'letter_list';
   if (['dashboard', 'get', 'notifications', 'notification:read', 'settings:get', 'push:config', 'sessions'].includes(action)) return 'read';
-  if (['purge', 'session:revoke', 'push:subscribe', 'push:unsubscribe'].includes(action)) return 'security';
+  if (['purge', 'session:revoke', 'sessions:revoke-others', 'media:prepare-upload', 'media:sign-letter-image', 'media:sign-letter-thumbnail', 'push:subscribe', 'push:unsubscribe', 'profile:avatar:set', 'profile:avatar:remove'].includes(action)) return 'security';
   return 'write';
 }
 
@@ -66,7 +67,7 @@ async function dispatchPushForLetter(letterId: string | null, recipientId: strin
   });
   if (!subscriptions.length) return;
 
-  webPush.setVapidDetails(config.subject, config.publicKey, config.privateKey);
+  setVapidDetails(config.subject, config.publicKey, config.privateKey);
   const now = nowIso();
   for (const subscription of subscriptions) {
     const sessionId = String(subscription.session_id || '');
@@ -87,7 +88,7 @@ async function dispatchPushForLetter(letterId: string | null, recipientId: strin
     if (claim.claimed !== true) continue;
 
     try {
-      const result = await webPush.sendNotification({
+      const result = await sendNotification({
         endpoint: String(subscription.endpoint),
         keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) }
       }, JSON.stringify({
@@ -269,6 +270,7 @@ type DecoratedLetter = Record<string, unknown> & {
   isUnread: boolean;
   readByRecipientAt: string | null;
   purgeConfirmedAt: string | null;
+  firstImageUrl?: string | null;
 };
 
 function decorate(row: Record<string, unknown>, state: Record<string, unknown> | undefined, names: Map<string,string>, recipientState?: Record<string, unknown>): DecoratedLetter {
@@ -315,12 +317,15 @@ async function fetchLetterList(userId: string, folder: string, search: string, o
   const names = await getNames(rows.flatMap(row => [
     String(row.sender_id), row.recipient_id ? String(row.recipient_id) : ''
   ]));
-  const items = rows.map(row => decorate(
+  const decorated = rows.map(row => decorate(
     row,
     states.get(String(row.id)),
     names,
     recipientStates.get(String(row.id))
   ));
+  // La lista no espera a firmar miniaturas de todas las tarjetas. El cliente
+  // solicita la miniatura privada solo cuando el sello se acerca al viewport.
+  const items = decorated;
   return {
     items, total: page.total, unread: page.unread, offset: page.offset,
     limit: page.limit, hasMore: page.hasMore, nextOffset: page.nextOffset
@@ -352,8 +357,12 @@ async function fetchLetterListCursor(userId: string, folder: string, search: str
   const names = await getNames(rows.flatMap(row => [
     String(row.sender_id), row.recipient_id ? String(row.recipient_id) : ''
   ]));
+  const decorated = rows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id))));
+  // La lista no espera a firmar miniaturas de todas las tarjetas. El cliente
+  // solicita la miniatura privada solo cuando el sello se acerca al viewport.
+  const items = decorated;
   return {
-    items: rows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id)))),
+    items,
     limit: page.limit,
     hasMore: page.hasMore,
     nextCursor: page.hasMore ? page.nextCursor : null,
@@ -362,6 +371,68 @@ async function fetchLetterListCursor(userId: string, folder: string, search: str
 }
 
 function stripTags(html: string) { return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '); }
+
+const LETTER_MEDIA_PATH = /^letters\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f-]{36})\.(jpg|jpeg|png|webp)$/i;
+
+const MIME_EXTENSION: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+
+function letterImagePaths(html: string): string[] {
+  return [...html.matchAll(/<img\b[^>]*data-image-path="([^"]+)"[^>]*>/gi)].map(match => match[1]);
+}
+
+function validateLetterImages(html: string, baseLetterId: string, ownerId: string) {
+  const paths = letterImagePaths(html);
+  if (paths.length > 6) throw new Error('LETTER_IMAGE_LIMIT');
+  for (const path of paths) {
+    const match = path.match(LETTER_MEDIA_PATH);
+    if (!match || match[1] !== baseLetterId || match[2] !== ownerId) throw new Error('LETTER_IMAGE_PATH_INVALID');
+  }
+}
+
+async function bodyWithSignedImages(row: Record<string, unknown>) {
+  let html = sanitizeRichHtml(row.body);
+  const tags = [...html.matchAll(/<img data-image-path="([^"]+)" alt="([^"]*)">/gi)];
+  if (!tags.length) return html;
+
+  // Firmar imágenes en paralelo y usar una variante de lectura optimizada.
+  // La firma solo se genera tras validar carta base, hilo y propietario.
+  const replacements = await Promise.all(tags.map(async tag => {
+    const fullTag = tag[0];
+    const path = tag[1];
+    const alt = tag[2];
+    const match = path.match(LETTER_MEDIA_PATH);
+    const baseAllowed = Boolean(match && (match[1] === String(row.id) || match[1] === String(row.reply_to_letter_id || '')));
+    const ownerAllowed = Boolean(match && match[2] === String(row.sender_id));
+    if (!baseAllowed || !ownerAllowed) return { fullTag, replacement: '' };
+    try {
+      const signed = (await createPrivateDisplayUrl(path, 86400)).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      const safePath = path.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      const safeAlt = alt.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return {
+        fullTag,
+        replacement: `<img src="${signed}" data-image-path="${safePath}" alt="${safeAlt}" loading="lazy" decoding="async" fetchpriority="low">`
+      };
+    } catch {
+      // Un fallo al firmar una imagen no debe impedir leer el resto de la carta.
+      return { fullTag, replacement: '' };
+    }
+  }));
+  for (const item of replacements) html = html.replace(item.fullTag, item.replacement);
+  return html;
+}
+
+function profileAvatarPathIsValid(path: string, userId: string) {
+  return new RegExp(`^${userId}/avatars/[0-9a-f-]{36}\\.(?:jpg|jpeg|png|webp)$`, 'i').test(path);
+}
+
+async function readProfile(userId: string) {
+  const profile = await selectOne<Record<string, unknown>>('user_profiles', {
+    select: 'user_id,display_name,avatar_path', user_id: `eq.${userId}`
+  });
+  const avatarPath = profile?.avatar_path ? String(profile.avatar_path) : null;
+  const avatarUrl = avatarPath ? await createPrivateAvatarUrl(avatarPath, 86400).catch(() => null) : null;
+  return { avatarPath, avatarUrl };
+}
 
 async function checkedLetter(letterId: string, userId: string) {
   if (!/^[0-9a-f-]{36}$/i.test(letterId)) throw new Error('LETTER_NOT_FOUND');
@@ -404,9 +475,19 @@ async function getLetterBundle(letterId: string, userId: string, threadCursor: L
     getNames(threadRows.flatMap(row => [String(row.sender_id), row.recipient_id ? String(row.recipient_id) : '']))
   ]);
   const decorated = threadRows.map(row => decorate(row, states.get(String(row.id)), names, recipientStates.get(String(row.id))));
-  const letter = decorated.find(row => row.id === current.id)
-    || decorate(current, states.get(String(current.id)), names, recipientStates.get(String(current.id)));
-  return { letter, thread: decorated, threadHasMore, threadNextCursor, threadLoadedOlderCount };
+  const decoratedWithMedia: DecoratedLetter[] = new Array(decorated.length);
+  let mediaCursor = 0;
+  const mediaWorker = async () => {
+    while (mediaCursor < decorated.length) {
+      const index = mediaCursor++;
+      decoratedWithMedia[index] = { ...decorated[index], body: await bodyWithSignedImages(decorated[index]) };
+    }
+  };
+  // Evita abrir cientos de solicitudes de firma a la vez en hilos extensos.
+  await Promise.all(Array.from({ length: Math.min(4, decorated.length) }, () => mediaWorker()));
+  const letter = decoratedWithMedia.find(row => row.id === current.id)
+    || { ...decorate(current, states.get(String(current.id)), names, recipientStates.get(String(current.id))), body: await bodyWithSignedImages(current) };
+  return { letter, thread: decoratedWithMedia, threadHasMore, threadNextCursor, threadLoadedOlderCount };
 }
 
 async function handleAction(action: string, body: Record<string, unknown>, session: Awaited<ReturnType<typeof requireSession>>) {
@@ -441,6 +522,9 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
     case 'draft:create': {
       const title = String(body.title || '').slice(0, 180);
       const html = sanitizeRichHtml(body.body);
+      // Las imágenes se adjuntan después de crear el borrador, cuando ya existe
+      // un ID que permite vincular el objeto privado a una carta concreta.
+      if (letterImagePaths(html).length) throw new Error('LETTER_IMAGE_PATH_INVALID');
       // El acceso al editor no crea registros. El cuerpo debe contener texto
       // real antes de que el servidor acepte crear un borrador.
       if (!stripTags(html).replace(/&nbsp;/g, ' ').trim()) return { status: 'empty' };
@@ -468,6 +552,7 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       // de Papelera. La recuperación es una acción explícita del usuario.
       if (state?.trashed_at) return { status: 'discarded', letterId: letter.id };
       const html = sanitizeRichHtml(body.body);
+      validateLetterImages(html, String(letter.id), userId);
       return rpc('save_letter_draft', { p_sender_id: userId, p_letter_id: letter.id, p_title: String(body.title || '').slice(0,180), p_body: html, p_expected_revision: Number(body.expectedRevision || 1) });
     }
     case 'draft:send': {
@@ -483,6 +568,7 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       const parent = await checkedLetter(String(body.parentLetterId || ''), userId);
       if (parent.status !== 'sent' || parent.recipient_id !== userId) throw new Error('LETTER_NOT_FOUND');
       const html = sanitizeRichHtml(body.body);
+      validateLetterImages(html, String(parent.id), userId);
       if (!stripTags(html).trim()) throw new Error('INVALID_INPUT');
       return rpc('create_letter_reply', { p_actor_id: userId, p_parent_letter_id: parent.id, p_creation_request_id: String(body.creationRequestId || crypto.randomUUID()), p_title: String(body.title || '').slice(0,180), p_body: html });
     }
@@ -578,13 +664,92 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       });
       return { status: 'unsubscribed' };
     }
+    case 'media:prepare-upload': {
+      const kind = String(body.kind || '');
+      const mimeType = String(body.mimeType || '').toLowerCase();
+      const fileSize = Number(body.fileSize);
+      const extension = MIME_EXTENSION[mimeType];
+      if (!extension || !Number.isSafeInteger(fileSize) || fileSize < 1 || fileSize > 5 * 1024 * 1024) throw new Error('MEDIA_FILE_INVALID');
+      let path = '';
+      if (kind === 'avatar') {
+        if (fileSize > 2 * 1024 * 1024) throw new Error('MEDIA_FILE_INVALID');
+        path = `${userId}/avatars/${crypto.randomUUID()}.${extension}`;
+      } else if (kind === 'letter-image') {
+        let base: Record<string, unknown>;
+        if (body.letterId) {
+          base = await checkedLetter(String(body.letterId), userId);
+          if (base.status !== 'draft' || base.sender_id !== userId) throw new Error('LETTER_NOT_FOUND');
+        } else {
+          base = await checkedLetter(String(body.parentLetterId || ''), userId);
+          if (base.status !== 'sent' || base.recipient_id !== userId) throw new Error('LETTER_NOT_FOUND');
+        }
+        path = `letters/${String(base.id)}/${userId}/${crypto.randomUUID()}.${extension}`;
+      } else {
+        throw new Error('INVALID_INPUT');
+      }
+      return { path, uploadUrl: await createPrivateUploadUrl(path), bucket: 'private-media' };
+    }
+    case 'media:sign-letter-image': {
+      const path = String(body.path || '');
+      const match = path.match(LETTER_MEDIA_PATH);
+      if (!match || match[2] !== userId) throw new Error('LETTER_NOT_FOUND');
+      let base: Record<string, unknown>;
+      if (body.letterId) {
+        base = await checkedLetter(String(body.letterId), userId);
+        if (base.status !== 'draft' || base.sender_id !== userId || match[1] !== String(base.id)) throw new Error('LETTER_NOT_FOUND');
+      } else {
+        base = await checkedLetter(String(body.parentLetterId || ''), userId);
+        if (base.status !== 'sent' || base.recipient_id !== userId || match[1] !== String(base.id)) throw new Error('LETTER_NOT_FOUND');
+      }
+      if (!(await privateObjectExists(path))) throw new Error('MEDIA_OBJECT_NOT_FOUND');
+      return { signedUrl: await createPrivateReadUrl(path, 86400) };
+    }
+    case 'media:sign-letter-thumbnail': {
+      const path = String(body.path || '');
+      const match = path.match(LETTER_MEDIA_PATH);
+      if (!match) throw new Error('LETTER_NOT_FOUND');
+      const letter = await checkedLetter(String(body.letterId || ''), userId);
+      const allowedBaseIds = [String(letter.id), String(letter.reply_to_letter_id || '')].filter(Boolean);
+      if (!allowedBaseIds.includes(match[1]) || match[2] !== String(letter.sender_id)) throw new Error('LETTER_NOT_FOUND');
+      if (!(await privateObjectExists(path))) throw new Error('MEDIA_OBJECT_NOT_FOUND');
+      const signedUrl = body.optimized === false
+        ? await createPrivateReadUrl(path, 86400)
+        : await createPrivateThumbnailUrl(path, 86400);
+      return { signedUrl };
+    }
+    case 'profile:avatar:set': {
+      const path = String(body.path || '');
+      if (!profileAvatarPathIsValid(path, userId) || !(await privateObjectExists(path))) throw new Error('MEDIA_FILE_INVALID');
+      const previous = await selectOne<Record<string, unknown>>('user_profiles', { select: 'avatar_path', user_id: `eq.${userId}` });
+      const currentProfile = await selectOne<Record<string, unknown>>('user_profiles', {
+        select: 'display_name', user_id: `eq.${userId}`
+      });
+      const rows = await dbRequest<Record<string, unknown>[]>('user_profiles?on_conflict=user_id', {
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify({
+          user_id: userId,
+          display_name: String(currentProfile?.display_name || session.user.display_name || session.user.username || 'Persona'),
+          avatar_path: path, updated_at: nowIso()
+        })
+      });
+      if (!rows?.length) throw new Error('PROFILE_UPDATE_FAILED');
+      if (previous?.avatar_path && String(previous.avatar_path) !== path) await deletePrivateObject(String(previous.avatar_path)).catch(() => {});
+      return { profile: { avatarPath: path, avatarUrl: await createPrivateAvatarUrl(path, 86400) } };
+    }
+    case 'profile:avatar:remove': {
+      const previous = await selectOne<Record<string, unknown>>('user_profiles', { select: 'avatar_path', user_id: `eq.${userId}` });
+      await patchRows('user_profiles', { user_id: `eq.${userId}` }, { avatar_path: null, updated_at: nowIso() });
+      if (previous?.avatar_path) await deletePrivateObject(String(previous.avatar_path)).catch(() => {});
+      return { profile: { avatarPath: null, avatarUrl: null } };
+    }
     case 'settings:get': {
       let settings = await selectOne<Record<string,unknown>>('user_settings', { select: 'user_id,theme,locale,time_zone,in_app_notifications_enabled', user_id: `eq.${userId}` });
       if (!settings) {
         const rows = await dbRequest<Record<string,unknown>[]>('user_settings', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ user_id: userId, theme: 'system', locale: 'es-CO', time_zone: 'America/Bogota', in_app_notifications_enabled: true }) });
         settings = rows[0] || { theme: 'system', locale: 'es-CO', time_zone: 'America/Bogota', in_app_notifications_enabled: true };
       }
-      return { settings };
+      const profile = await readProfile(userId);
+      return { settings, profile };
     }
     case 'settings:update': {
       const timeZone = String(body.timeZone || 'America/Bogota');
@@ -611,8 +776,32 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       return { user: result.user };
     }
     case 'sessions': {
-      const sessions = await selectRows<Record<string,unknown>>('user_sessions', { select: 'id,device_label,user_agent,created_at,last_seen_at,idle_expires_at,absolute_expires_at,revoked_at', user_id: `eq.${userId}`, order: 'last_seen_at.desc', limit: '30' });
-      return { sessions: sessions.filter(row => !row.revoked_at && new Date(String(row.absolute_expires_at)).getTime() > Date.now()).map(row => ({ ...row, isCurrent: row.id === session.sessionId })) };
+      const now = nowIso();
+      const [currentSession, otherSessions] = await Promise.all([
+        selectOne<Record<string, unknown>>('user_sessions', {
+          select: 'id,device_label,user_agent,created_at,last_seen_at,idle_expires_at,absolute_expires_at,revoked_at',
+          user_id: `eq.${userId}`, id: `eq.${session.sessionId}`, revoked_at: 'is.null',
+          idle_expires_at: `gt.${now}`, absolute_expires_at: `gt.${now}`
+        }),
+        selectRows<Record<string, unknown>>('user_sessions', {
+          select: 'id,device_label,user_agent,created_at,last_seen_at,idle_expires_at,absolute_expires_at,revoked_at',
+          user_id: `eq.${userId}`, id: `neq.${session.sessionId}`, revoked_at: 'is.null',
+          idle_expires_at: `gt.${now}`, absolute_expires_at: `gt.${now}`,
+          order: 'last_seen_at.desc', limit: '29'
+        })
+      ]);
+      const sessions = [...(currentSession ? [{ ...currentSession, isCurrent: true }] : []), ...otherSessions.map(row => ({ ...row, isCurrent: false }))];
+      return { sessions };
+    }
+    case 'sessions:revoke-others': {
+      // Una sola transacción en PostgreSQL revoca sesiones, refresh tokens y
+      // suscripciones push. Se excluye expresamente la sesión que hace la petición.
+      const revokedCount = await rpc<number>('revoke_other_app_sessions', {
+        p_user_id: userId,
+        p_current_session_id: session.sessionId,
+        p_now: nowIso()
+      });
+      return { status: 'revoked', revokedCount: Number.isSafeInteger(Number(revokedCount)) ? Number(revokedCount) : 0 };
     }
     case 'session:revoke': {
       const id = String(body.sessionId || '');
@@ -674,7 +863,8 @@ Deno.serve(async (req: Request) => {
     if (message === 'LETTER_NOT_FOUND' || message === 'SESSION_NOT_FOUND') mapped = { status: 404, code: 'NOT_FOUND', message: 'El recurso solicitado no existe o no está disponible para esta cuenta.' };
     else if (message === 'INVALID_INPUT') mapped = { status: 400, code: 'INVALID_INPUT', message: 'Revisa los datos de la operación y vuelve a intentarlo.' };
     else if (message === 'UNKNOWN_ACTION') mapped = { status: 404, code: 'UNKNOWN_ACTION', message: 'Acción no reconocida.' };
-    console.error('letters-api error', mapped.code);
+    const diagnostic = message.split(':')[0].replace(/[^A-Z0-9_-]/gi, '').slice(0, 80) || 'UNCLASSIFIED_ERROR';
+    console.error('letters-api error', mapped.code, diagnostic);
     return jsonResponse(req, { ok: false, code: mapped.code, message: mapped.message }, mapped.status, headers);
   }
 });

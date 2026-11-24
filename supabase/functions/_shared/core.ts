@@ -371,7 +371,7 @@ export function sanitizeRichHtml(html: unknown): string {
   const document = new DOMParser().parseFromString(`<html><body>${input}</body></html>`, 'text/html');
   const body = document.querySelector('body');
   if (!body) return '';
-  const allowedTags = new Set(['P', 'DIV', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'UL', 'OL', 'LI', 'BLOCKQUOTE']);
+  const allowedTags = new Set(['P', 'DIV', 'BR', 'STRONG', 'B', 'EM', 'I', 'U', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'IMG']);
   const allowedAlignments = new Set(['left', 'center', 'right', 'justify']);
   const encode = (value: string) => value
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -380,6 +380,17 @@ export function sanitizeRichHtml(html: unknown): string {
     if (node.nodeType === 3) return encode(node.textContent || '');
     if (node.nodeType !== 1) return '';
     const tag = String(node.tagName || '').toUpperCase();
+    if (tag === 'IMG') {
+      // Solo se conserva el identificador interno del objeto. Nunca se acepta
+      // un src enviado por el navegador: las URL privadas se vuelven a firmar
+      // después de comprobar acceso, carta base y propietario.
+      const path = String(node.getAttribute?.('data-image-path') || '').trim();
+      if (!/^letters\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(?:jpg|jpeg|png|webp)$/i.test(path)) return '';
+      // No persistir nombres locales de archivo en alt: la interfaz usa un
+      // texto genérico y placeholders visuales hasta terminar la decodificación.
+      const alt = encode('Imagen adjunta');
+      return `<img data-image-path="${encode(path)}" alt="${alt}">`;
+    }
     const children = [...(node.childNodes || [])].map(walk).join('');
     if (!allowedTags.has(tag)) return children;
     const align = String(node.style?.textAlign || '').toLowerCase();
@@ -402,6 +413,29 @@ export function errorStatus(error: unknown): { status: number; code: string; mes
   }
   if (code === 'PAYLOAD_TOO_LARGE' || code === 'LETTER_TOO_LARGE') {
     return { status: 413, code, message: 'El contenido supera el tamaño permitido.' };
+  }
+  if (code === 'MEDIA_FILE_INVALID' || code === 'MEDIA_OBJECT_NOT_FOUND'
+    || code === 'LETTER_IMAGE_LIMIT' || code === 'LETTER_IMAGE_PATH_INVALID') {
+    return { status: 400, code, message: 'La imagen no es válida, supera el límite permitido o no pertenece a esta carta.' };
+  }
+  if (code === 'MEDIA_UPLOAD_URL_INVALID' || code === 'MEDIA_SIGNED_URL_INVALID'
+    || code === 'MEDIA_STORAGE_NETWORK_ERROR' || code.startsWith('MEDIA_BUCKET_')
+    || code.startsWith('MEDIA_UPLOAD_URL_')) {
+    return { status: 503, code, message: 'El almacenamiento privado de imágenes no pudo preparar la operación. Vuelve a intentarlo.' };
+  }
+  if (code.startsWith('MEDIA_STORAGE_HTTP_')) {
+    const status = Number(code.match(/MEDIA_STORAGE_HTTP_(\d{3})/)?.[1] || 0);
+    const message = status === 401 || status === 403
+      ? 'Supabase Storage rechazó la autorización de la operación. Comprueba la configuración privada del almacenamiento.'
+      : status === 404
+        ? 'No se encontró el archivo o el bucket privado de imágenes.'
+        : status === 413
+          ? 'La imagen supera el tamaño permitido por Supabase Storage.'
+          : 'Supabase Storage rechazó la operación de imagen. Vuelve a intentarlo.';
+    return { status: status >= 400 && status <= 599 ? status : 502, code, message };
+  }
+  if (code === 'PROFILE_UPDATE_FAILED') {
+    return { status: 503, code, message: 'La imagen se subió, pero no se pudo guardar en tu perfil. Vuelve a intentarlo.' };
   }
   if (code.startsWith('MISSING_SUPABASE_')) {
     return { status: 503, code, message: 'Supabase no está proporcionando las credenciales internas necesarias.' };

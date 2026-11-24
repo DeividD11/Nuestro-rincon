@@ -30,6 +30,11 @@ try {
   switch (action) {
     case 'enable-push-notifications': await this.enablePushNotifications(); break;
     case 'disable-push-notifications': await this.disablePushNotifications(); break;
+    case 'remove-profile-avatar': {
+      const approved = await showConfirmDialog({ tone: 'warning', title: 'Quitar avatar', message: 'La imagen dejará de mostrarse en tu perfil.', confirmLabel: 'Quitar avatar', cancelLabel: 'Conservar imagen' });
+      if (approved) await this.removeProfileAvatar();
+      break;
+    }
     case 'show-register': { const pending = readPendingRecovery(); this.view.renderRegister('', ['registration', 'registration_bundle'].includes(pending?.purpose) ? pending : null); break; }
     case 'show-login': this.view.renderLogin(); break;
     case 'show-recovery': this.view.renderRecovery(); break;
@@ -136,12 +141,28 @@ try {
     case 'retry-letter': await this.openLetter(this.state.selectedLetter?.letter?.id, false, this.state.selectedLetter?.letter); break;
     case 'back-to-list': await this.openRoute(this.previousListRoute, true, { focus: true }); break;
     case 'cancel-editor': await this.openRoute(this.previousListRoute || 'drafts', true, { focus: true }); break;
-    case 'save-draft': await this.saveDraft(false); break;
+    case 'save-draft': {
+      const isReply = Boolean(this.state.editor?.parentLetterId);
+      const result = await this.saveDraft(false);
+      if (!isReply && ['saved', 'created', 'local'].includes(result?.status)) {
+        await this.openRoute('drafts', true, { focus: true });
+      }
+      break;
+    }
     case 'preview-send': await this.previewSend(); break;
     case 'preview-send-draft': await this.openLetterForSend(actionTarget.dataset.letterId); break;
     case 'confirm-send': await this.confirmSend(); break;
     case 'dismiss-modal': this.closeModal(); break;
     case 'edit-draft': await this.editDraft(actionTarget.dataset.letterId); break;
+    case 'edit-local-draft': await this.editLocalDraft(actionTarget.dataset.localDraftKey); break;
+    case 'choose-letter-image': {
+      const editor = this.root.querySelector('#letter-editor');
+      const selection = window.getSelection();
+      this._letterImageInsertionRange = selection?.rangeCount && editor?.contains(selection.getRangeAt(0).commonAncestorContainer)
+        ? selection.getRangeAt(0).cloneRange() : null;
+      this.root.querySelector('#letter-image-input')?.click();
+      break;
+    }
     case 'reply-letter': await this.startReply(actionTarget.dataset.letterId); break;
     case 'format-bold': this.execFormat('bold'); break;
     case 'format-italic': this.execFormat('italic'); break;
@@ -277,6 +298,67 @@ try {
     case 'download-html': await this.downloadHtml(actionTarget.dataset.letterId); break;
     case 'print-letter': window.print(); break;
     case 'read-notification': await this.repository.markNotificationRead(actionTarget.dataset.notificationId); this.invalidateRouteCache(); await this.openRoute('notifications', false); break;
+    case 'revoke-other-sessions': {
+      const otherCount = (this.state.sessions || []).filter(item => !item.isCurrent).length;
+      const approved = await showConfirmDialog({
+        tone: 'warning', title: 'Revocar las demás sesiones',
+        message: otherCount
+          ? `Se cerrarán ${otherCount} sesiones activas que aparecen en esta lista y cualquier otra sesión no revocada de tu cuenta.`
+          : 'Se cerrarán todas las demás sesiones no revocadas, incluidas las que hayan caducado.',
+        detail: 'Este dispositivo y esta sesión permanecerán conectados. Los demás tendrán que iniciar sesión de nuevo.',
+        confirmLabel: 'Revocar las demás', cancelLabel: 'Conservar sesiones', icon: '⌑'
+      });
+      if (!approved) break;
+
+      // Mantiene estable el anclaje visual incluso cuando la lista se acorta
+      // estando la persona cerca del final de la página.
+      const sessionCard = actionTarget.closest('.sessions-card');
+      const anchorTop = sessionCard?.getBoundingClientRect().top ?? null;
+      const sessionList = sessionCard?.querySelector('.session-list');
+      const originalListMarkup = sessionList?.innerHTML ?? null;
+      const originalSessions = [...(this.state.sessions || [])];
+      const originalButtonText = actionTarget.textContent;
+      const originalButtonDisabled = actionTarget.disabled;
+      const restoreScroll = () => {
+        if (anchorTop === null || !sessionCard?.isConnected) return;
+        const nextTop = sessionCard.getBoundingClientRect().top;
+        const delta = nextTop - anchorTop;
+        if (Math.abs(delta) > 1) window.scrollTo({ left: 0, top: Math.max(0, (window.scrollY || 0) + delta), behavior: 'instant' });
+      };
+
+      actionTarget.disabled = true;
+      actionTarget.setAttribute('aria-busy', 'true');
+      actionTarget.textContent = 'Revocando…';
+      // Actualización optimista y local: no se vuelve a renderizar la vista ni
+      // se encadenan peticiones individuales por cada dispositivo.
+      this.state.sessions = originalSessions.filter(item => item.isCurrent);
+      sessionCard?.querySelectorAll('.session-row:not(.is-current)').forEach(row => row.remove());
+      actionTarget.textContent = 'No hay otras sesiones por revocar';
+      restoreScroll();
+
+      try {
+        const result = await this.repository.revokeOtherSessions();
+        actionTarget.removeAttribute('aria-busy');
+        actionTarget.disabled = true;
+        actionTarget.textContent = 'No hay otras sesiones por revocar';
+        this.sessionChannel?.postMessage({ type: 'sessions-revoked-except-current', currentSessionId: this.session.sessionId });
+        this.invalidateRouteCache();
+        restoreScroll();
+        showToast(`Se revocaron ${Number(result.revokedCount || 0)} sesiones. Este dispositivo sigue conectado.`, 'success');
+      } catch (error) {
+        this.state.sessions = originalSessions;
+        if (sessionList && originalListMarkup !== null) sessionList.innerHTML = originalListMarkup;
+        actionTarget.textContent = originalButtonText;
+        actionTarget.disabled = originalButtonDisabled;
+        actionTarget.removeAttribute('aria-busy');
+        restoreScroll();
+        if (error.code === 'UNKNOWN_ACTION') {
+          throw new Error('La función letters-api de Supabase no está actualizada. Publica la versión incluida en este proyecto y vuelve a intentarlo.');
+        }
+        throw error;
+      }
+      break;
+    }
     case 'revoke-session': {
       const approved = await showConfirmDialog({
         tone: 'warning', title: 'Revocar sesión',

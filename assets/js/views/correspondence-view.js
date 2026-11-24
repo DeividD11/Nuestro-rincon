@@ -1,4 +1,6 @@
-import { escapeHtml, sanitizeRichHtml } from '../utils/dom.js';
+import { escapeHtml, sanitizeRichHtml, plainTextFromHtml } from '../utils/dom.js';
+import { renderLetterBodyHtml, renderEditorBodyHtml } from '../utils/letter-images.js';
+import { APP_CONFIG } from '../config/app-config.js';
 import { formatDate, greeting, relativeDate } from '../utils/format.js';
 
 export function renderHome(view, state) {
@@ -10,6 +12,52 @@ export function renderHome(view, state) {
       <div class="two-col"><section><div class="section-head"><h3>Las últimas palabras</h3><a href="#/inbox" data-route="inbox">Ver buzón →</a></div>${recentMarkup}</section><aside class="panel"><h3>Un gesto sencillo</h3><p class="muted" style="font-size:12px;line-height:1.8">No hace falta esperar una fecha especial para decir algo importante. A veces, una carta pequeña se convierte en un recuerdo enorme.</p><button class="btn btn-soft btn-block" data-route="write">✎ Escribir con calma</button><div class="section-head"><h3>Tu espacio</h3></div><div style="font:italic 16px/1.8 var(--serif);color:#8b6f63">“Hay cosas que solo se entienden bien cuando se leen despacio.”</div></aside></div>`;
 }
 
+const LETTER_MEDIA_PATH = /^letters\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f-]{36})\.(?:jpg|jpeg|png|webp)$/i;
+
+function firstImagePathFromBody(body = '') {
+    const firstTag = String(body).match(/<img\b[^>]*>/i)?.[0] || '';
+    const path = firstTag.match(/\bdata-image-path\s*=\s*([\"'])(.*?)\1/i)?.[2] || '';
+    return LETTER_MEDIA_PATH.test(path) ? path : '';
+}
+
+function safePrivateImageUrl(source) {
+    if (!source) return '';
+    try {
+      const url = new URL(source);
+      const origin = new URL(APP_CONFIG.supabaseUrl).origin;
+      const allowedPath = url.pathname.startsWith('/storage/v1/object/sign/private-media/')
+        || url.pathname.startsWith('/storage/v1/render/image/sign/private-media/');
+      if (url.protocol === 'https:' && url.origin === origin && allowedPath) return url.href;
+    } catch { /* Una URL inválida no se representa. */ }
+    return '';
+}
+
+function renderLetterStamp(item, icon) {
+    const source = String(item?.firstImageUrl || '');
+    const safeSource = safePrivateImageUrl(source);
+    const path = firstImagePathFromBody(item?.body || '');
+    const letterId = String(item?.letterId || item?.id || '');
+    const pathMatch = path.match(LETTER_MEDIA_PATH);
+    const allowedBaseIds = [letterId, String(item?.reply_to_letter_id || '')].filter(Boolean);
+    const pathBelongsToLetter = Boolean(pathMatch && allowedBaseIds.includes(pathMatch[1])
+      && (!item?.sender_id || pathMatch[2] === String(item.sender_id)));
+    const parentLetterId = String(item?.reply_to_letter_id || '');
+    const previewAttributes = pathBelongsToLetter
+      ? `data-letter-id="${escapeHtml(letterId)}" data-reply-to-letter-id="${escapeHtml(parentLetterId)}" data-image-path="${escapeHtml(path)}"`
+      : '';
+
+    if (safeSource) {
+      return `<div class="letter-stamp has-image is-loading" ${previewAttributes} aria-hidden="true"><span class="letter-stamp-fallback"><span class="letter-stamp-fallback-mark">▧</span></span><img src="${escapeHtml(safeSource)}" alt="" width="96" height="96" loading="lazy" decoding="async" fetchpriority="low" referrerpolicy="no-referrer"></div>`;
+    }
+
+    // Los borradores sin URL del listado se hidratan a partir de la primera ruta
+    // privada; el servidor vuelve a validar carta, propietario y participante.
+    if (pathBelongsToLetter) {
+      return `<div class="letter-stamp has-image is-loading is-pending-source" ${previewAttributes} aria-hidden="true"><span class="letter-stamp-fallback"><span class="letter-stamp-fallback-mark">▧</span></span></div>`;
+    }
+    return `<div class="letter-stamp" aria-hidden="true">${icon}</div>`;
+}
+
 export function letterCard(view, item, compact = false, state = {}) {
     const unread = Boolean(item.isUnread);
     const pending = state.pendingLetterActions?.has?.(item.id) === true;
@@ -18,18 +66,22 @@ export function letterCard(view, item, compact = false, state = {}) {
     const date = item.sent_at || item.updated_at || item.created_at;
     const badge = item.isInTrash ? 'En papelera' : item.status === 'draft' ? 'Borrador' : item.isArchived ? 'Archivada' : item.isFavorite ? 'Favorita' : 'Carta';
     const icon = item.isInTrash ? '⌫' : item.status === 'draft' ? '✎' : item.isArchived ? '⌑' : '✉';
-    const main = `<button type="button" class="letter-card-main" data-action="open-letter" data-letter-id="${escapeHtml(item.id)}"><span class="letter-info"><strong>${title}</strong><small>${item.status === 'draft' ? 'Borrador personal' : other} · ${escapeHtml(relativeDate(date))}</small></span><span class="letter-meta"><time>${escapeHtml(formatDate(date, {time:false}))}</time>${unread ? '<span class="status-pill unread">Sin leer</span>' : compact ? '' : `<span class="status-pill">${badge}</span>`}</span></button>`;
-    if (compact) return `<article class="letter-card compact"><div class="letter-stamp" aria-hidden="true">${icon}</div>${main}</article>`;
+    const isLocalDraft = Boolean(item.localDraftKey || item.id?.startsWith?.('local:'));
+    const main = `<button type="button" class="letter-card-main" data-action="${isLocalDraft ? 'edit-local-draft' : 'open-letter'}" ${isLocalDraft ? `data-local-draft-key="${escapeHtml(item.localDraftKey || '')}"` : `data-letter-id="${escapeHtml(item.id)}"` }><span class="letter-info"><strong>${title}</strong><small>${item.status === 'draft' ? 'Borrador personal' : other} · ${escapeHtml(relativeDate(date))}</small></span><span class="letter-meta"><time>${escapeHtml(formatDate(date, {time:false}))}</time>${unread ? '<span class="status-pill unread">Sin leer</span>' : compact ? '' : `<span class="status-pill">${badge}</span>`}</span></button>`;
+    const stamp = renderLetterStamp(item, icon);
+    if (compact) return `<article class="letter-card compact">${stamp}${main}</article>`;
     let actions = '';
     if (item.isInTrash) {
       const purgePending = Boolean(item.purgeConfirmedAt);
       actions = `${purgePending ? '<span class="purge-awaiting" role="status">✓ Tu confirmación está guardada; falta la otra persona</span>' : ''}<button type="button" class="btn btn-soft btn-small" data-action="restore-letter" data-letter-id="${escapeHtml(item.id)}" ${pending ? 'disabled aria-busy="true"' : ''}>↶ Recuperar</button><button type="button" class="btn ${purgePending ? 'btn-soft' : 'btn-danger'} btn-small" data-action="purge-letter" data-letter-id="${escapeHtml(item.id)}" ${purgePending || pending ? 'disabled aria-disabled="true"' : ''}>${purgePending ? 'Esperando confirmación' : pending ? 'Procesando…' : 'Eliminar definitivamente'}</button>`;
     } else if (item.status === 'draft') {
-      actions = `<button type="button" class="btn btn-soft btn-small" data-action="edit-draft" data-letter-id="${escapeHtml(item.id)}" ${pending ? 'disabled aria-busy="true"' : ''}>Seguir escribiendo</button><button type="button" class="btn btn-danger btn-small" data-action="trash-letter" data-letter-id="${escapeHtml(item.id)}" data-letter-status="${escapeHtml(item.status)}" ${pending ? 'disabled aria-busy="true"' : ''}>Descartar</button>`;
+      actions = isLocalDraft
+        ? `<button type="button" class="btn btn-soft btn-small" data-action="edit-local-draft" data-local-draft-key="${escapeHtml(item.localDraftKey || '')}">Seguir escribiendo</button><span class="status-pill pending-invitation">Guardado en este dispositivo · sincronizando</span>`
+        : `<button type="button" class="btn btn-soft btn-small" data-action="edit-draft" data-letter-id="${escapeHtml(item.id)}" ${pending ? 'disabled aria-busy="true"' : ''}>Seguir escribiendo</button><button type="button" class="btn btn-danger btn-small" data-action="trash-letter" data-letter-id="${escapeHtml(item.id)}" data-letter-status="${escapeHtml(item.status)}" ${pending ? 'disabled aria-busy="true"' : ''}>Descartar</button>`;
     } else {
       actions = `<button type="button" class="btn btn-soft btn-small" data-action="toggle-favorite" data-favorite="${Boolean(item.isFavorite)}" data-letter-id="${escapeHtml(item.id)}" ${pending ? 'disabled aria-busy="true"' : ''}>${item.isFavorite ? '♥ Favorita' : '♡ Favorito'}</button><button type="button" class="btn btn-soft btn-small" data-action="toggle-archive" data-archived="${Boolean(item.isArchived)}" data-letter-id="${escapeHtml(item.id)}" ${pending ? 'disabled aria-busy="true"' : ''}>${item.isArchived ? '↶ Desarchivar' : '⌑ Archivar'}</button><button type="button" class="btn btn-danger btn-small" data-action="trash-letter" data-letter-id="${escapeHtml(item.id)}" data-letter-status="${escapeHtml(item.status)}" ${pending ? 'disabled aria-busy="true"' : ''}>Descartar</button>`;
     }
-    return `<article class="letter-card ${item.isInTrash ? 'in-trash' : ''}"><div class="letter-stamp" aria-hidden="true">${icon}</div>${main}<div class="letter-card-actions">${actions}</div></article>`;
+    return `<article class="letter-card ${item.isInTrash ? 'in-trash' : ''}">${stamp}${main}<div class="letter-card-actions">${actions}</div></article>`;
 }
 
 export function emptyState(view, icon, title, description, action = '') {
@@ -43,6 +95,29 @@ export function renderPagination(view, pagination, action, noun) {
     return `<div class="pagination-footer" data-pagination-sentinel><span class="pagination-status">${loaded} cargadas</span><button class="btn btn-ghost btn-small" type="button" data-action="${action}" ${pagination.loading ? 'disabled aria-busy="true"' : ''}>${label}</button></div>`;
 }
 
+export function renderListResults(view, state) {
+    const items = [...new Map((state.letters || []).filter(item => item?.id).map(item => [String(item.id), item])).values()];
+    const query = String(state.search || '').trim().toLocaleLowerCase();
+    if (state.route === 'drafts' && state.localDraftPreview) {
+      const preview = state.localDraftPreview;
+      const exists = items.some(item => String(item.id) === String(preview.letterId || preview.id));
+      const previewText = `${preview.title || ''} ${plainTextFromHtml(preview.body || '')}`.toLocaleLowerCase();
+      if (!exists && (!query || previewText.includes(query))) items.unshift(preview);
+    }
+    const empty = state.search?.trim()
+      ? view.emptyState('⌕', 'No encontramos coincidencias', 'Prueba con otra palabra o un título diferente.')
+      : state.route === 'trash'
+        ? view.emptyState('⌫', 'La papelera está vacía', 'Las cartas que descartes aparecerán aquí antes de su eliminación definitiva.')
+        : state.route === 'archive'
+          ? view.emptyState('⌑', 'Todavía no has archivado cartas', 'Usa la opción “Archivar” en una carta enviada o recibida para guardarla aquí.')
+          : state.route === 'drafts'
+            ? view.emptyState('✎', 'Todavía no hay borradores', 'Al guardar una carta como borrador, aparecerá aquí para que puedas continuar escribiéndola.', '<button class="btn btn-primary" data-route="write">Escribir carta</button>')
+            : view.emptyState('✉', 'Todavía no hay cartas aquí', 'Cuando haya correspondencia en esta sección, la encontrarás aquí.');
+    const cards = items.length ? `<div class="letter-list">${items.map(item => view.letterCard(item, false, state)).join('')}</div>` : empty;
+    const pagination = view.renderPagination(state.pagination, 'load-more-letters', 'cartas');
+    return `${cards}${pagination}`;
+}
+
 export function renderList(view, state) {
     const names = {
       inbox: ['Mi buzón', 'Las cartas que te han escrito'],
@@ -53,32 +128,21 @@ export function renderList(view, state) {
       trash: ['Papelera', 'Cartas descartadas; puedes recuperarlas o eliminarlas']
     };
     const [title, subtitle] = names[state.route] || names.inbox;
-    const items = [...new Map((state.letters || []).filter(item => item?.id).map(item => [String(item.id), item])).values()];
     const folderCopy = {
       drafts: ['✎', 'Todavía en preparación', 'Las cartas de aquí no se han enviado. Puedes continuar editándolas.'],
       archive: ['⌑', 'Guardadas aparte', 'Archivar oculta una carta de las bandejas principales, pero no la elimina.'],
       trash: ['⌫', 'Elementos descartados', 'Recupera una carta para devolverla a su sección o elimínala definitivamente.']
     }[state.route];
     const context = folderCopy ? `<aside class="folder-context folder-${state.route}"><span class="folder-context-icon">${folderCopy[0]}</span><div><strong>${folderCopy[1]}</strong><p>${folderCopy[2]}</p></div></aside>` : '';
-    const empty = state.route === 'trash'
-      ? view.emptyState('⌫', 'La papelera está vacía', 'Las cartas que descartes aparecerán aquí antes de su eliminación definitiva.')
-      : state.route === 'archive'
-        ? view.emptyState('⌑', 'Todavía no has archivado cartas', 'Usa la opción “Archivar” en una carta enviada o recibida para guardarla aquí.')
-        : state.route === 'drafts'
-          ? view.emptyState('✎', 'Todavía no hay borradores', 'Al guardar una carta como borrador, aparecerá aquí para que puedas continuar escribiéndola.', '<button class="btn btn-primary" data-route="write">Escribir carta</button>')
-          : view.emptyState('✉', 'Todavía no hay cartas aquí', 'Cuando haya correspondencia en esta sección, la encontrarás aquí.');
-    const cards = items.length ? `<div class="letter-list">${items.map(item => view.letterCard(item, false, state)).join('')}</div>` : empty;
-    const pagination = view.renderPagination(state.pagination, 'load-more-letters', 'cartas');
-    return `<div class="page-heading"><div><span class="eyebrow">Correspondencia</span><h2>${title}</h2><p>${subtitle}</p></div>${state.route === 'trash' ? '' : '<button class="btn btn-primary" data-route="write">＋ Escribir carta</button>'}</div>${context}<div class="search-row"><input id="letter-search" type="search" value="${escapeHtml(state.search)}" placeholder="Buscar por título o contenido…" aria-label="Buscar cartas"></div>${cards}${pagination}`;
+    return `<div class="page-heading"><div><span class="eyebrow">Correspondencia</span><h2>${title}</h2><p>${subtitle}</p></div>${state.route === 'trash' ? '' : '<button class="btn btn-primary" data-route="write">＋ Escribir carta</button>'}</div>${context}<div class="search-row"><input id="letter-search" name="current-letter-filter" type="search" value="${escapeHtml(state.search)}" placeholder="Buscar por título o contenido…" aria-label="Buscar cartas" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" maxlength="120" aria-controls="letter-list-results" aria-describedby="letter-search-status" data-lpignore="true"><span id="letter-search-status" class="search-status" role="status" aria-live="polite"></span></div><div id="letter-list-results" class="letter-list-results" aria-live="polite" aria-busy="false">${renderListResults(view, state)}</div>`;
 }
-
 export function renderEditor(view, state) {
     const editor = state.editor || {};
     const title = escapeHtml(editor.title || '');
-    const body = sanitizeRichHtml(editor.body || '');
+    const body = renderEditorBodyHtml(editor.body || '');
     const status = editor.saving ? 'Guardando…' : editor.saved ? 'Guardado' : 'Se guardará automáticamente';
     return `<div class="page-heading"><div><span class="eyebrow">Una página en blanco</span><h2>${editor.letterId ? 'Continuar borrador' : 'Escribe algo bonito'}</h2><p>Escribe sin prisa. Tu borrador se guarda automáticamente.</p></div><button class="btn btn-ghost" data-action="cancel-editor">← Volver</button></div>
-      <section class="editor-shell"><div class="editor-top"><span class="editor-overline">PARA TU PERSONA FAVORITA</span><strong id="save-status" class="editor-save-status">${status}</strong></div><div class="editor-title-field"><label for="editor-title">Asunto de tu carta</label><input id="editor-title" class="editor-input" maxlength="180" placeholder="Ponle un título especial…" value="${title}" aria-label="Título de la carta"></div><div class="editor-toolbar" role="toolbar" aria-label="Formato del texto"><div class="editor-toolbar-group"><button type="button" class="tool-btn" data-action="format-bold" title="Negrita" aria-label="Negrita"><b>B</b></button><button type="button" class="tool-btn" data-action="format-italic" title="Cursiva" aria-label="Cursiva"><i>I</i></button><button type="button" class="tool-btn" data-action="format-underline" title="Subrayado" aria-label="Subrayado"><u>U</u></button></div><span class="editor-toolbar-divider" aria-hidden="true"></span><div class="editor-toolbar-group"><button type="button" class="tool-btn" data-action="format-left" title="Alinear a la izquierda" aria-label="Alinear a la izquierda">☰</button><button type="button" class="tool-btn" data-action="format-center" title="Centrar" aria-label="Centrar">≡</button><button type="button" class="tool-btn" data-action="format-right" title="Alinear a la derecha" aria-label="Alinear a la derecha">☷</button></div><span class="editor-toolbar-hint">Formato sencillo</span></div><div class="editor-writing-surface"><div class="editor-writing-heading"><span id="letter-body-label">Tu carta</span><small>Escribe con calma</small></div><div id="letter-editor" class="letter-editor" contenteditable="true" role="textbox" aria-labelledby="letter-body-label" aria-describedby="letter-body-help" aria-multiline="true" data-placeholder="Querida…
+      <section class="editor-shell"><div class="editor-top"><span class="editor-overline">PARA TU PERSONA FAVORITA</span><strong id="save-status" class="editor-save-status">${status}</strong></div><div class="editor-title-field"><label for="editor-title">Asunto de tu carta</label><input id="editor-title" class="editor-input" maxlength="180" placeholder="Ponle un título especial…" value="${title}" aria-label="Título de la carta"></div><div class="editor-toolbar" role="toolbar" aria-label="Formato del texto"><div class="editor-toolbar-group"><button type="button" class="tool-btn" data-action="format-bold" title="Negrita" aria-label="Negrita"><b>B</b></button><button type="button" class="tool-btn" data-action="format-italic" title="Cursiva" aria-label="Cursiva"><i>I</i></button><button type="button" class="tool-btn" data-action="format-underline" title="Subrayado" aria-label="Subrayado"><u>U</u></button></div><span class="editor-toolbar-divider" aria-hidden="true"></span><div class="editor-toolbar-group"><button type="button" class="tool-btn" data-action="format-left" title="Alinear a la izquierda" aria-label="Alinear a la izquierda">☰</button><button type="button" class="tool-btn" data-action="format-center" title="Centrar" aria-label="Centrar">≡</button><button type="button" class="tool-btn" data-action="format-right" title="Alinear a la derecha" aria-label="Alinear a la derecha">☷</button></div><button type="button" class="tool-btn image-tool-btn" data-action="choose-letter-image" title="Insertar imagen" aria-label="Insertar imagen en la carta"><svg class="image-tool-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="2.2" y="3" width="15.6" height="14" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7.5" r="1.5" fill="currentColor"/><path d="m3.5 15 4.2-4.2 2.6 2.4 2.2-2.1 4 3.9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Imagen</span></button><input id="letter-image-input" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="Seleccionar imágenes para la carta"><span class="editor-toolbar-hint">Formato sencillo</span></div><div class="editor-writing-surface"><div class="editor-writing-heading"><span id="letter-body-label">Tu carta</span><small>Escribe con calma</small></div><div id="letter-editor" class="letter-editor" contenteditable="true" role="textbox" aria-labelledby="letter-body-label" aria-describedby="letter-body-help" aria-multiline="true" data-placeholder="Querida…
 
 Hoy quería escribirte porque…">${body}</div><span id="letter-body-help" class="sr-only">Área de edición de texto. Puedes utilizar los botones de formato y escribir o pegar el contenido de tu carta.</span></div><div class="editor-footer"><small>Se sincroniza automáticamente y mantiene una copia local de respaldo.</small><div class="btn-group"><button class="btn btn-soft" type="button" data-action="save-draft">Guardar borrador</button><button class="btn btn-primary" type="button" data-action="preview-send">Revisar y enviar →</button></div></div></section>`;
 }
@@ -120,12 +184,12 @@ export function renderLetterContent(view, state) {
     const threadItems = [...new Map((data.thread || []).filter(item => item?.id).map(item => [String(item.id), item])).values()];
     const renderThreadItem = item => {
       const active = String(item.id) === String(letter.id);
-      return `<article class="conversation-item ${active ? 'is-active' : ''}" data-thread-letter="${escapeHtml(item.id)}"><div class="conversation-head"><span>${escapeHtml(item.senderName || 'Remitente')} → ${escapeHtml(item.recipientName || 'Destinatario')}</span><time>${escapeHtml(formatDate(item.sent_at || item.created_at))}</time></div><h3>${escapeHtml(item.title || 'Sin título')}</h3><div class="letter-body">${sanitizeRichHtml(item.body || '')}</div><div class="letter-actions no-print"><button class="btn btn-ghost btn-small conversation-open-button" data-action="open-letter" data-letter-id="${escapeHtml(item.id)}" ${active ? 'disabled aria-current="page"' : ''}>${active ? 'Carta abierta' : 'Abrir carta'}</button></div></article>`;
+      return `<article class="conversation-item ${active ? 'is-active' : ''}" data-thread-letter="${escapeHtml(item.id)}"><div class="conversation-head"><span>${escapeHtml(item.senderName || 'Remitente')} → ${escapeHtml(item.recipientName || 'Destinatario')}</span><time>${escapeHtml(formatDate(item.sent_at || item.created_at))}</time></div><h3>${escapeHtml(item.title || 'Sin título')}</h3><div class="letter-body">${renderLetterBodyHtml(item.body || '')}</div><div class="letter-actions no-print"><button class="btn btn-ghost btn-small conversation-open-button" data-action="open-letter" data-letter-id="${escapeHtml(item.id)}" ${active ? 'disabled aria-current="page"' : ''}>${active ? 'Carta abierta' : 'Abrir carta'}</button></div></article>`;
     };
     const threadBoundary = Math.min(threadItems.length, Math.max(0, Number(data.threadLoadedOlderCount || 0)));
     const olderTimeline = threadItems.slice(0, threadBoundary).map(renderThreadItem).join('');
     const newerTimeline = threadItems.slice(threadBoundary).map(renderThreadItem).join('');
-    const paper = `<article class="letter-paper" id="printable-letter"><div class="letter-paper-inner"><span class="eyebrow">${isDraft ? 'Borrador privado' : 'Correspondencia personal'}</span><h2>${escapeHtml(letter.title || 'Sin título')}</h2><div class="letter-byline"><span>De: ${senderName}</span><span>Para: ${recipientName}</span><span>${escapeHtml(formatDate(letter.sent_at || letter.created_at))}</span>${!isDraft ? `<span class="delivery-status">${escapeHtml(deliveryStatus)}</span>` : ''}</div><div class="letter-body">${sanitizeRichHtml(letter.body || '')}</div><p class="letter-signature">Con cariño, ${senderName}</p></div></article>`;
+    const paper = `<article class="letter-paper" id="printable-letter"><div class="letter-paper-inner"><span class="eyebrow">${isDraft ? 'Borrador privado' : 'Correspondencia personal'}</span><h2>${escapeHtml(letter.title || 'Sin título')}</h2><div class="letter-byline"><span>De: ${senderName}</span><span>Para: ${recipientName}</span><span>${escapeHtml(formatDate(letter.sent_at || letter.created_at))}</span>${!isDraft ? `<span class="delivery-status">${escapeHtml(deliveryStatus)}</span>` : ''}</div><div class="letter-body">${renderLetterBodyHtml(letter.body || '')}</div><p class="letter-signature">Con cariño, ${senderName}</p></div></article>`;
     const threadCount = threadItems.length;
     const threadPager = data.threadHasMore
       ? `<div class="thread-pagination" data-pagination-sentinel><button class="btn btn-ghost btn-small" type="button" data-action="load-older-thread" ${data.threadLoading ? 'disabled aria-busy="true"' : ''}>${data.threadLoading ? 'Cargando cartas anteriores…' : '↑ Cargar cartas anteriores'}</button><span>${threadCount} cargadas</span></div>`

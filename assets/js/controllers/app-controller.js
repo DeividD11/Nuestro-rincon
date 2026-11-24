@@ -40,8 +40,11 @@ export class AppController {
     this.routeCacheTtl = 60000;
     this.routePrefetches = new Map();
     this.routeCacheVersion = 0;
+    this.searchTimer = null;
+    this.searchRequestId = 0;
     this.letterThreadCache = new Map();
     this.pendingLetterActions = new Set();
+    this.letterStampPreviewCache = new Map();
     this.paginationObserver = null;
     this.editorInputVersion = 0;
     this.systemThemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)') || null;

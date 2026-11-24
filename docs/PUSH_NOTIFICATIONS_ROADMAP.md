@@ -44,3 +44,8 @@ La notificación dentro de una pestaña sigue usando `AdaptivePoller` (30 s acti
 - Verificar el flujo extremo a extremo en Android/Chrome, iOS/Safari instalado y navegadores de escritorio.
 - Confirmar que logout/revocación elimina la suscripción y que cuenta A nunca recibe notificaciones de B.
 - Observar tasas 201/404/410/429 sin registrar datos privados.
+
+
+## Compatibilidad ESM de `web-push` 4.0.0 (24 de noviembre de 2026)
+
+`web-push@4.0.0` es ESM-only. Dentro de `letters-api` se deben importar los exports nombrados: `sendNotification` y `setVapidDetails`. No utilizar `import webPush from 'web-push'`: el paquete no expone un export `default` y su uso impide que el worker arranque, provocando `503 BOOT_ERROR` incluso en el preflight CORS. La función de producción v10 incluye la corrección.

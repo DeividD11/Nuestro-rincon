@@ -1,6 +1,7 @@
 import { readPendingRecovery } from '../services/recovery-handoff.js';
 import { AdaptivePoller } from '../services/adaptive-poller.js';
 import { showToast } from '../utils/dom.js';
+import { uploadPrivateMedia } from '../services/private-media-upload.js';
 
 export class SettingsController {
     themeStorageKey() {
@@ -46,11 +47,37 @@ export class SettingsController {
       try {
         const result = await this.repository.settings();
         if (!this.session.user) return;
+        const previousProfile = this.state.profile || { avatarUrl: null, avatarPath: null };
+        const incomingProfile = result.profile || previousProfile;
+        const sameAvatarPath = Boolean(previousProfile.avatarPath)
+          && String(previousProfile.avatarPath) === String(incomingProfile.avatarPath || '');
+        const canReuseAvatarImage = sameAvatarPath
+          && (Boolean(previousProfile.previewUrl) || this.view?.avatarNodeCache?.hasSidebarImage?.(previousProfile));
+        this.state.profile = sameAvatarPath
+          ? {
+              ...incomingProfile,
+              // Mantener el objeto/URL actual solo si el nodo sigue cargando o
+              // ya tiene píxeles. Si falló o nunca se creó, usar la firma nueva.
+              avatarUrl: canReuseAvatarImage
+                ? (previousProfile.avatarUrl || incomingProfile.avatarUrl || null)
+                : (incomingProfile.avatarUrl || previousProfile.avatarUrl || null),
+              previewUrl: previousProfile.previewUrl || null
+            }
+          : { ...incomingProfile, previewUrl: incomingProfile.previewUrl || null };
+        this.syncAvatarFromProfile(previousProfile, this.state.profile);
+
         this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
         this.cacheTheme(this.state.settings.theme);
         this.applyTheme(this.state.settings.theme);
+        // Actualizar los controles sin reconstruir el árbol: así conservamos
+        // los nodos de imagen ya descargados y decodificados.
+        const themeControl = this.root.querySelector('#settings-theme');
+        const timezoneControl = this.root.querySelector('#settings-timezone');
+        const notificationsControl = this.root.querySelector('#settings-notifications');
+        if (themeControl) themeControl.value = this.state.settings.theme || 'system';
+        if (timezoneControl) timezoneControl.value = this.state.settings.time_zone || 'America/Bogota';
+        if (notificationsControl) notificationsControl.checked = this.state.settings.in_app_notifications_enabled !== false;
         this.loadPushStatus().catch(() => {});
-        if (this.state.route === 'settings') this.render();
       } catch { /* Un fallo de preferencias no debe bloquear el resto de la aplicación. */ }
     }
 
@@ -133,6 +160,160 @@ export class SettingsController {
       };
       this.render();
       showToast('Las notificaciones externas se desactivaron en este dispositivo.', 'success');
+    }
+
+    syncAvatarFromProfile(previousProfile = {}, nextProfile = {}) {
+      const cache = this.view?.avatarNodeCache;
+      const previousIdentity = cache?.avatarIdentity?.(previousProfile) || '';
+      const nextIdentity = cache?.avatarIdentity?.(nextProfile) || '';
+      const nextUrl = nextProfile.previewUrl || nextProfile.avatarUrl || null;
+      const previousUrl = previousProfile.previewUrl || previousProfile.avatarUrl || null;
+      const sidebarNode = this.root.querySelector('.user-mini .avatar');
+      const sidebarImage = sidebarNode?.querySelector('img');
+      const sidebarImageMissing = Boolean(nextUrl && (!sidebarImage
+        || (sidebarImage.complete && sidebarImage.naturalWidth === 0)));
+      const needsRefresh = previousIdentity !== nextIdentity
+        || (!previousUrl && Boolean(nextUrl))
+        || sidebarImageMissing;
+
+      if (needsRefresh) {
+        this.updateAvatarPreview(nextUrl, {
+          persisted: Boolean(nextProfile.avatarPath || nextProfile.avatarUrl),
+          updateSidebar: true
+        });
+      } else {
+        cache?.adopt?.(nextProfile);
+      }
+    }
+
+    updateAvatarPreview(url, { persisted = Boolean(this.state.profile?.avatarUrl), updateSidebar = false } = {}) {
+      const displayName = String(this.session.user?.displayName || this.session.user?.username || 'NR');
+      const avatarInitials = displayName.split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase();
+      const updateContainer = (container, placeholderClass) => {
+        if (!container) return;
+        let placeholder = container.querySelector(`.${placeholderClass}`);
+        if (!placeholder) {
+          placeholder = document.createElement('span');
+          placeholder.className = placeholderClass;
+          placeholder.setAttribute('aria-hidden', 'true');
+        }
+        placeholder.textContent = avatarInitials;
+        const currentImage = container.querySelector('img');
+        const sameSource = Boolean(url && currentImage
+          && (currentImage.getAttribute('src') === url || currentImage.src === url));
+        if (!url) {
+          currentImage?.remove();
+          container.classList.remove('has-image', 'is-loading');
+          container.setAttribute('aria-hidden', 'true');
+          container.replaceChildren(placeholder);
+          return;
+        }
+        container.classList.add('has-image');
+        container.classList.toggle('is-loading', !sameSource || !currentImage?.complete || currentImage?.naturalWidth === 0);
+        container.setAttribute('aria-hidden', 'true');
+        if (sameSource) {
+          if (placeholder.parentNode !== container) container.prepend(placeholder);
+          return;
+        }
+        const image = document.createElement('img');
+        image.alt = '';
+        image.loading = 'eager';
+        image.decoding = 'async';
+        image.fetchPriority = 'high';
+        image.referrerPolicy = 'no-referrer';
+        container.replaceChildren(placeholder, image);
+        image.src = url;
+      };
+
+      updateContainer(this.root.querySelector('.profile-avatar-preview'), 'avatar-preview-placeholder');
+
+      const pickerLabel = this.root.querySelector('label[for="profile-avatar-input"]');
+      if (pickerLabel) pickerLabel.textContent = url || persisted ? 'Cambiar avatar' : 'Agregar avatar';
+      const controls = this.root.querySelector('.profile-avatar-controls');
+      if (controls) {
+        let removeButton = controls.querySelector('[data-action="remove-profile-avatar"]');
+        if (persisted && !removeButton) {
+          removeButton = document.createElement('button');
+          removeButton.type = 'button';
+          removeButton.className = 'btn btn-ghost btn-small';
+          removeButton.dataset.action = 'remove-profile-avatar';
+          removeButton.textContent = 'Quitar avatar';
+          controls.insertBefore(removeButton, controls.querySelector('small'));
+        } else if (!persisted) {
+          removeButton?.remove();
+        }
+      }
+
+      if (updateSidebar) {
+        updateContainer(this.root.querySelector('.user-mini .avatar'), 'avatar-image-placeholder');
+      }
+      this.view?.avatarNodeCache?.adopt?.(this.state.profile);
+    }
+
+    async uploadProfileAvatar(file) {
+      if (!file) return;
+      if (!navigator.onLine) throw new Error('Necesitas conexión para actualizar tu avatar.');
+      const previousProfile = { ...(this.state.profile || { avatarUrl: null, avatarPath: null }) };
+      const previewUrl = URL.createObjectURL(file);
+      this.state.profile = { ...previousProfile, previewUrl };
+      // La vista previa aparece inmediatamente, antes de procesar o subir el archivo.
+      this.updateAvatarPreview(previewUrl, { persisted: Boolean(previousProfile.avatarUrl), updateSidebar: true });
+
+      try {
+        const { prepareImageFile } = await import('../services/image-processing.js');
+        const image = await prepareImageFile(file, { maxDimension: 512, maxBytes: 512 * 1024 });
+        const media = await this.repository.prepareMediaUpload({ kind: 'avatar', mimeType: image.type, fileSize: image.size });
+        await uploadPrivateMedia(media.uploadUrl, image);
+        const result = await this.repository.setAvatar(media.path);
+        const savedProfile = result.profile || { avatarPath: media.path, avatarUrl: null };
+        const remoteUrl = savedProfile.avatarUrl || null;
+        this.state.profile = {
+          ...previousProfile,
+          ...savedProfile,
+          // Conserva el object URL local hasta que el recurso privado esté listo.
+          previewUrl
+        };
+        this.view?.avatarNodeCache?.adopt?.(this.state.profile);
+
+        if (remoteUrl) {
+          // Precargar y decodificar antes de sustituir la foto local mantiene
+          // una imagen visible durante toda la transición de Storage.
+          const warmedImage = new Image();
+          warmedImage.decoding = 'async';
+          warmedImage.referrerPolicy = 'no-referrer';
+          warmedImage.src = remoteUrl;
+          try {
+            if (typeof warmedImage.decode === 'function') await warmedImage.decode();
+            else if (!warmedImage.complete) await new Promise((resolve, reject) => {
+              warmedImage.onload = resolve;
+              warmedImage.onerror = reject;
+            });
+            this.state.profile = { ...this.state.profile, previewUrl: null };
+            this.updateAvatarPreview(remoteUrl, { persisted: true, updateSidebar: true });
+            URL.revokeObjectURL(previewUrl);
+          } catch {
+            // La foto local sigue visible y válida aunque la URL firmada falle.
+            this.state.profile = { ...this.state.profile, previewUrl };
+          }
+        } else {
+          this.updateAvatarPreview(previewUrl, { persisted: Boolean(savedProfile.avatarPath), updateSidebar: true });
+        }
+        showToast('Tu avatar se actualizó.', 'success');
+      } catch (error) {
+        this.state.profile = previousProfile;
+        this.updateAvatarPreview(previousProfile.previewUrl || previousProfile.avatarUrl || null, {
+          persisted: Boolean(previousProfile.avatarUrl), updateSidebar: Boolean(previousProfile.avatarUrl)
+        });
+        URL.revokeObjectURL(previewUrl);
+        throw error;
+      }
+    }
+
+    async removeProfileAvatar() {
+      const result = await this.repository.removeAvatar();
+      this.state.profile = result.profile || { avatarPath: null, avatarUrl: null };
+      this.render();
+      showToast('Se quitó tu avatar.', 'success');
     }
 
     async refreshSessions() {

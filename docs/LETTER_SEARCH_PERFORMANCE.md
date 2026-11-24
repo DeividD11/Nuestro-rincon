@@ -47,3 +47,12 @@ No se migró a `tsvector` en esta fase. El full-text search separa el texto por 
 ## Alcance y despliegue
 
 Los cambios están en una migración local ya existente y en pruebas pgTAP. No se aplicaron a Supabase remoto ni se desplegó `letters-api`. La migración debe validarse con `supabase db reset`/pgTAP en entorno aislado antes de sincronizarla con la Edge Function correspondiente.
+
+
+## Interacción en vivo del frontend (v38)
+
+Los campos de búsqueda de Mi buzón, Enviadas, Borradores, Favoritos, Archivo y Papelera actualizan únicamente `#letter-list-results`. El input, el encabezado, la navegación y el resto del shell permanecen montados; por tanto, el foco y la posición de desplazamiento no se reinician al escribir.
+
+La consulta usa una pausa corta de 170 ms para agrupar pulsaciones muy seguidas, y cada petición recibe un identificador incremental. Si una respuesta llega después de que el usuario ya cambió el texto o la sección, se descarta y no puede reemplazar resultados más recientes. La paginación usa el mismo término temporal.
+
+La búsqueda no se escribe en localStorage, IndexedDB, URL, historial propio ni en una clave de caché por consulta. Al activar cualquier sección se vacía el término anterior; el input declara `autocomplete=off`, desactiva autocorrección y no ofrece sugerencias de búsquedas anteriores. El servidor sigue aplicando la búsqueda de título/cuerpo sobre todas las cartas accesibles, no solamente sobre la página ya cargada.

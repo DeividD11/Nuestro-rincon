@@ -18,6 +18,12 @@ test('las confirmaciones nativas se sustituyen por el diálogo común de la apli
   assert.match(utility, /event\.key !== 'Tab'/);
 });
 
+test('cerrar un diálogo restaura el scroll de forma instantánea aunque el sitio use scroll suave', async () => {
+  const utility = await read('../assets/js/utils/dom.js');
+  assert.match(utility, /window\.scrollTo\(\{\s*left:\s*0,\s*top:\s*scrollY,\s*behavior:\s*'instant'\s*\}\)/);
+  assert.doesNotMatch(utility, /window\.scrollTo\(0,\s*scrollY\)/);
+});
+
 test('las acciones destructivas explican el alcance y utilizan botones explícitos', async () => {
   const controller = await readControllerSource();
   assert.match(controller, /title: 'Eliminar definitivamente'/);

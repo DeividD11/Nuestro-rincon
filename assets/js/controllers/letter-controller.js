@@ -1,5 +1,6 @@
 import { getLocalDraft, deleteLocalDraft } from '../services/local-drafts.js';
 import { plainTextFromHtml, sanitizeRichHtml, showToast, escapeHtml } from '../utils/dom.js';
+import { renderLetterBodyHtml, bindLetterImageLoading } from '../utils/letter-images.js';
 
 export class LetterController {
     cacheLetterThread(data) {
@@ -167,8 +168,53 @@ export class LetterController {
     }
 
     async openLetterForSend(letterId) {
-      await this.editDraft(letterId);
+      const data = await this.repository.get(letterId);
+      if (data.letter.status !== 'draft') throw new Error('Esta carta ya no es un borrador.');
+      this.localDraftKey = this.localDraftKeyFor(`letter:${letterId}`);
+      const local = await getLocalDraft(this.localDraftKey);
+      const localIsNewer = Boolean(local?.savedAt
+        && new Date(local.savedAt).getTime() > new Date(data.letter.updated_at || data.letter.created_at).getTime());
+      this.state.editor = {
+        letterId,
+        creationRequestId: local?.creationRequestId || null,
+        title: localIsNewer ? (local.title || '') : (data.letter.title || ''),
+        body: localIsNewer ? (local.body || '') : (data.letter.body || ''),
+        revision: data.letter.revision,
+        parentLetterId: null,
+        saving: false,
+        saved: !localIsNewer,
+        localOnly: localIsNewer,
+        pendingSync: localIsNewer
+      };
+      // No se navega a Escribir carta: el botón de revisión abre directamente
+      // el modal sobre Borradores. Al cerrar, el foco regresa a la tarjeta.
+      this.routeRequestId++;
+      this.state.routeLoading = false;
       await this.previewSend();
+    }
+
+    async editLocalDraft(storageKey = '') {
+      const key = storageKey || this.state.localDraftPreview?.localDraftKey || this.localDraftKeyFor('new');
+      const local = await getLocalDraft(key);
+      const fallback = this.state.localDraftPreview?.localDraftKey === key ? this.state.localDraftPreview : null;
+      const draft = local || fallback;
+      if (!draft) throw new Error('No encontramos la copia local del borrador. Actualiza la lista e inténtalo de nuevo.');
+      this.localDraftKey = key;
+      this.state.editor = {
+        ...draft,
+        letterId: draft.letterId || null,
+        creationRequestId: draft.creationRequestId || crypto.randomUUID(),
+        parentLetterId: null,
+        saving: false, saved: Boolean(draft.saved),
+        localOnly: !draft.letterId || Boolean(draft.localOnly),
+        pendingSync: !draft.letterId || Boolean(draft.pendingSync)
+      };
+      this.routeRequestId++;
+      this.state.routeLoading = false;
+      this.state.route = 'write';
+      history.replaceState(null, '', '#/write');
+      this.render();
+      if (this.state.editor.pendingSync || this.state.editor.localOnly) this.saveDraft(true).catch(() => {});
     }
 
     async editDraft(letterId) {
@@ -213,16 +259,37 @@ export class LetterController {
       const editor = this.state.editor;
       if (!editor?.parentLetterId && (!editor?.letterId || editor.localOnly || editor.conflict)) throw new Error('No se pudo sincronizar el borrador con el servidor. Se conserva la copia local; vuelve a intentarlo antes de enviar.');
       if (!plainTextFromHtml(editor?.body || '').trim()) throw new Error('Escribe el contenido de la carta antes de enviarla.');
-      const preview = sanitizeRichHtml(editor.body);
+      const preview = renderLetterBodyHtml(editor.body);
       const modal = document.createElement('div');
       modal.className = 'modal-backdrop';
       modal.id = 'confirm-modal';
       modal.innerHTML = `<section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="send-confirm-title" aria-describedby="send-confirm-description" tabindex="-1"><span class="eyebrow">Un último vistazo</span><h2 id="send-confirm-title">¿Enviar esta carta?</h2><p id="send-confirm-description">Después de enviarla quedará registrada como correspondencia y ya no se editará silenciosamente.</p><article class="letter-paper" style="padding:20px;margin-top:14px"><h2 style="font-size:23px">${escapeHtml(editor.title || 'Sin título')}</h2><div class="letter-body">${preview}</div></article><div class="modal-actions"><button type="button" class="btn btn-ghost" data-action="dismiss-modal">Seguir revisando</button><button type="button" class="btn btn-primary" data-action="confirm-send">Enviar carta ↗</button></div></section>`;
       this._modalPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      this._modalScrollY = window.scrollY || window.pageYOffset || 0;
       this._modalPreviousOverflow = document.body.style.overflow;
+      this._modalPreviousPosition = document.body.style.position;
+      this._modalPreviousTop = document.body.style.top;
+      this._modalPreviousWidth = document.body.style.width;
+      this._modalPreviousLeft = document.body.style.left;
+      this._modalPreviousRight = document.body.style.right;
+      this._modalPreviousHtmlOverflow = document.documentElement.style.overflow;
       this._modalPreviousAriaHidden = this.root.getAttribute('aria-hidden');
       this._modalPreviousInert = this.root.hasAttribute('inert');
+      document.documentElement.style.overflow = 'hidden';
+      document.documentElement.classList.add('modal-open');
+      document.body.style.position = 'fixed';
+      document.body.style.top = `-${this._modalScrollY}px`;
+      document.body.style.left = '0';
+      document.body.style.right = '0';
+      document.body.style.width = '100%';
       document.body.style.overflow = 'hidden';
+      this._modalPreventBackdropScroll = event => {
+        if (!event.target?.closest?.('.modal-card')) event.preventDefault();
+      };
+      modal.addEventListener('touchmove', this._modalPreventBackdropScroll, { passive: false });
+      modal.addEventListener('wheel', this._modalPreventBackdropScroll, { passive: false });
+      this._modalImageLoadingCleanup?.();
+      this._modalImageLoadingCleanup = bindLetterImageLoading(modal);
       this._sendPreviewKeydown = event => {
         const dialog = modal.querySelector('[role="dialog"]');
         if (!dialog) return;
@@ -277,10 +344,25 @@ export class LetterController {
     closeModal() {
       const modal = document.querySelector('#confirm-modal');
       if (!modal) return;
+      this._modalImageLoadingCleanup?.();
+      this._modalImageLoadingCleanup = null;
       if (this._sendPreviewKeydown) document.removeEventListener('keydown', this._sendPreviewKeydown, true);
       this._sendPreviewKeydown = null;
+      if (this._modalPreventBackdropScroll) {
+        modal.removeEventListener('touchmove', this._modalPreventBackdropScroll);
+        modal.removeEventListener('wheel', this._modalPreventBackdropScroll);
+      }
+      this._modalPreventBackdropScroll = null;
       modal.remove();
+      document.documentElement.classList.remove('modal-open');
+      document.documentElement.style.overflow = this._modalPreviousHtmlOverflow || '';
       document.body.style.overflow = this._modalPreviousOverflow || '';
+      document.body.style.position = this._modalPreviousPosition || '';
+      document.body.style.top = this._modalPreviousTop || '';
+      document.body.style.width = this._modalPreviousWidth || '';
+      document.body.style.left = this._modalPreviousLeft || '';
+      document.body.style.right = this._modalPreviousRight || '';
+      window.scrollTo(0, this._modalScrollY || 0);
       if (this._modalPreviousAriaHidden === null || this._modalPreviousAriaHidden === undefined) this.root.removeAttribute('aria-hidden');
       else this.root.setAttribute('aria-hidden', this._modalPreviousAriaHidden);
       if (this._modalPreviousInert) this.root.setAttribute('inert', '');

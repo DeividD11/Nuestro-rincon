@@ -11,7 +11,7 @@ const LETTER_ID = '11111111-1111-4111-8111-111111111111';
 
  test('la caché privada está aislada por cuenta y el cambio de identidad vacía los datos visibles', async () => {
   const source = await readControllerSource();
-  assert.match(source, /return `\$\{route\}:\$\{accountId\}:/);
+  assert.match(source, /return `\$\{route\}:\$\{accountId\}`;/);
   const reset = source.slice(source.indexOf('resetPrivateSessionState(user = null)'), source.indexOf('uniqueLetters(items = [])'));
   for (const state of ['this.routeCache.clear()', 'this.routePrefetches.clear()', 'this.state.letters = []', 'this.state.selectedLetter = null', 'this.state.notifications = []']) {
     assert.ok(reset.includes(state), `Falta limpiar ${state}`);

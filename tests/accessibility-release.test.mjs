@@ -148,7 +148,7 @@ test('el texto de metadatos y estado de entrega conserva contraste AA sobre el p
 test('la hoja de estilos contempla foco visible, áreas táctiles y movimiento reducido', async () => {
   const css = await readCssBundle();
   assert.match(css, /\.skip-link:focus/);
-  assert.match(css, /\.topbar h1:focus/);
+  assert.match(css, /#page-heading:focus[\s\S]*?outline: 0 !important;[\s\S]*?box-shadow: none !important;/);
   assert.match(css, /@media \(pointer: coarse\)[\s\S]*?min-width: 44px[\s\S]*?min-height: 44px/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(css, /:root \{ --muted: #71625b; \}/);
@@ -284,8 +284,8 @@ test('las tarjetas de la Papelera conservan nombre visible y contraste AA en amb
   const appCss = await read('../assets/css/app.css');
   assert.doesNotMatch(view, /class="letter-card-main"[^>]*aria-label=/);
   assert.match(view, /class="letter-card-main"[^>]*data-letter-id=/);
-  assert.match(view, /sanitizeRichHtml\(letter\.body \|\| ''\)/);
-  assert.match(view, /sanitizeRichHtml\(item\.body \|\| ''\)/);
+  assert.match(view, /renderLetterBodyHtml\(letter\.body \|\| ''\)/);
+  assert.match(view, /renderLetterBodyHtml\(item\.body \|\| ''\)/);
   assert.doesNotMatch(view, /\bfmtBody\b/);
   assert.match(appCss, /\.status-pill\{[^}]*background:#f2e8df;color:#80513f\}/);
   assert.match(appCss, /\.status-pill\.unread\{background:#f4dfd8;color:#8c4c40\}/);

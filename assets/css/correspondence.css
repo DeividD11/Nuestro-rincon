@@ -191,3 +191,500 @@ html[data-theme="dark"] .app-shell .conversation-item.is-active {
 .pagination-footer [aria-busy="true"],.thread-pagination [aria-busy="true"]{opacity:.7;cursor:progress}
 html[data-theme="dark"] .pagination-footer,html[data-theme="dark"] .thread-pagination{color:var(--muted)}
 @media(max-width:640px){.pagination-footer{padding:18px 8px 24px}.thread-pagination{align-items:flex-start;flex-direction:column;gap:8px}}
+
+
+/* Papel de lectura: mejor jerarquía, medida de línea y espaciado del contenido. */
+.letter-paper {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 900px;
+  padding: clamp(30px, 5.2vw, 68px);
+  overflow: visible;
+}
+.letter-paper-inner { position: relative; z-index: 1; width: 100%; min-width: 0; }
+.letter-paper-inner > .eyebrow { display: inline-block; margin-bottom: 7px; color: #8a6d5e; font-size: 10px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.letter-paper-inner > h2 { max-width: 25ch; margin: 4px 0 22px; color: #403630; font: 500 clamp(27px, 3vw, 36px)/1.28 Georgia, 'Times New Roman', serif; letter-spacing: -.018em; overflow-wrap: anywhere; }
+.letter-paper .letter-byline {
+  align-items: center;
+  gap: 8px 16px;
+  margin: 0 0 30px;
+  padding: 0 0 18px;
+  color: #6f625c;
+  line-height: 1.55;
+}
+.letter-paper .letter-body {
+  width: 100%;
+  max-width: 68ch;
+  margin-inline: auto;
+  color: #403630;
+  font: 400 clamp(16px, 1.12rem, 18px)/1.92 Georgia, 'Times New Roman', serif;
+  letter-spacing: .002em;
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  hyphens: auto;
+}
+.letter-paper .letter-body p { margin: 0 0 1.12em; }
+.letter-paper .letter-body > div { margin: 0 0 1.12em; }
+.letter-paper .letter-body strong,.letter-paper .letter-body b { font-weight: 700; }
+.letter-paper .letter-body em,.letter-paper .letter-body i { font-style: italic; }
+.letter-paper .letter-body u { text-decoration-thickness: .07em; text-underline-offset: .15em; }
+.letter-paper .letter-body p:last-child { margin-bottom: 0; }
+.letter-paper .letter-body blockquote {
+  margin: 1.3em 0;
+  padding: 11px 16px;
+  border-left: 3px solid #bd9585;
+  border-radius: 0 9px 9px 0;
+  background: #f8f1e9;
+  color: #65534a;
+}
+.letter-paper .letter-body ul,
+.letter-paper .letter-body ol { margin: 1em 0; padding-left: 1.6em; }
+.letter-paper .letter-signature {
+  max-width: 68ch;
+  margin: 30px auto 0;
+  color: #765d52;
+  font: italic 17px/1.6 Georgia, 'Times New Roman', serif;
+}
+.modal-card .letter-paper .letter-body { max-width: 68ch; font-size: clamp(16px, 1.08rem, 18px); line-height: 1.9; }
+
+/* Imágenes dentro de cartas: nombre de archivo oculto y placeholder mientras decodifica. */
+.letter-body .letter-image-frame {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: min(100%, 740px);
+  min-width: 0;
+  margin: 20px auto;
+  border-radius: 13px;
+}
+.letter-body .letter-image-frame.is-loading,
+.letter-body .letter-image-frame.is-error {
+  width: min(100%, 740px);
+  min-height: 170px;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid #e9ddd2;
+  background: linear-gradient(110deg, #f5eee7 8%, #fbf8f3 35%, #f0e7de 62%, #f5eee7 92%);
+}
+.letter-image-placeholder {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #8a7569;
+  font: 600 11px/1.4 system-ui, sans-serif;
+}
+.letter-image-frame.is-loading .letter-image-placeholder,
+.letter-image-frame.is-error .letter-image-placeholder { display: grid; }
+.letter-image-placeholder-icon { font-size: 25px; opacity: .78; }
+.letter-image-placeholder-label { letter-spacing: .01em; }
+.letter-image-frame.is-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.58) 48%, transparent 72%);
+  transform: translateX(-100%);
+  animation: letter-image-shimmer 1.35s ease-in-out infinite;
+}
+.letter-body .letter-image-frame img {
+  display: block;
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: min(720px, 72vh);
+  margin: 0 auto;
+  border: 1px solid rgba(110,83,69,.16);
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 8px 24px rgba(48,34,28,.10);
+}
+.letter-body .letter-image-frame.is-loading img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  opacity: 0;
+  border: 0;
+  border-radius: inherit;
+  object-fit: contain;
+}
+@keyframes letter-image-shimmer { to { transform: translateX(100%); } }
+
+/* Miniatura del sello: placeholder animado como avatar-preview-placeholder. */
+.letter-stamp.has-image.is-loading { background: linear-gradient(110deg, #f1e7df, #faf5ef, #eee2d8); }
+.letter-stamp.has-image .letter-stamp-fallback { overflow: hidden; }
+.letter-stamp.has-image.is-loading .letter-stamp-fallback {
+  z-index: 2;
+  background: linear-gradient(110deg, #f3e9e2 8%, #fbf7f3 36%, #eee1d8 62%, #f3e9e2 92%);
+  background-size: 220% 100%;
+}
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.62) 48%, transparent 72%);
+  transform: translateX(-100%);
+  animation: avatar-preview-shimmer 1.25s ease-in-out infinite;
+}
+.letter-stamp-fallback-mark { position: relative; z-index: 0; font-size: 16px; opacity: .22; }
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(126, 91, 75, .22);
+  border-top-color: rgba(126, 91, 75, .78);
+  border-radius: 50%;
+  animation: letter-stamp-spin .8s linear infinite;
+}
+.letter-stamp.has-image.is-loading img { opacity: 0; }
+.letter-stamp.has-image img { opacity: 1; transition: opacity .18s ease; }
+@keyframes letter-stamp-spin { to { transform: rotate(360deg); } }
+html[data-theme="dark"] .letter-stamp.has-image.is-loading { background: linear-gradient(110deg, #342925, #493831, #342925); }
+html[data-theme="dark"] .letter-stamp.has-image.is-loading .letter-stamp-fallback { background: linear-gradient(110deg, #362a25 8%, #4a3931 36%, #302621 62%, #362a25 92%); }
+html[data-theme="dark"] .letter-stamp.has-image.is-loading .letter-stamp-fallback::before { background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.16) 48%, transparent 72%); }
+html[data-theme="dark"] .letter-stamp.has-image.is-loading .letter-stamp-fallback::after { border-color: rgba(243,220,207,.22); border-top-color: rgba(243,220,207,.78); }
+html[data-theme="dark"] .letter-paper .letter-body { color: #403630; }
+html[data-theme="dark"] .letter-paper .letter-byline { color: #6f625c; }
+html[data-theme="dark"] .letter-paper .letter-body blockquote { background: #f1e8de; color: #65534a; }
+html[data-theme="dark"] .letter-body .letter-image-frame.is-loading,
+html[data-theme="dark"] .letter-body .letter-image-frame.is-error { border-color: #e3d7ca; }
+@media (max-width: 720px) {
+  .letter-paper { padding: 25px 19px; }
+  .letter-paper .letter-byline { gap: 7px 12px; margin-bottom: 23px; padding-bottom: 15px; }
+  .letter-paper .letter-body { font-size: 16px; line-height: 1.82; }
+  .letter-paper .letter-signature { margin-top: 24px; }
+  .letter-body .letter-image-frame.is-loading,
+  .letter-body .letter-image-frame.is-error { min-height: 145px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .letter-image-frame.is-loading::after, .letter-stamp.has-image.is-loading .letter-stamp-fallback::before { animation: none; transform: none; opacity: .24; }
+  .letter-stamp.has-image.is-loading .letter-stamp-fallback::after { animation: none; border-top-color: rgba(126,91,75,.42); }
+  .letter-stamp.has-image img { transition: none; }
+}
+
+/* En el editor, imágenes ya insertadas conservan su posición sin revelar el nombre del archivo. */
+.letter-editor img.letter-editor-image {
+  display: block;
+  transition: opacity .16s ease;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: 420px;
+  margin: 18px auto;
+  border-radius: 11px;
+  object-fit: contain;
+}
+.letter-editor .letter-image-upload-placeholder {
+  position: relative;
+  display: block;
+  width: min(100%, 640px);
+  min-height: 150px;
+  aspect-ratio: 16 / 10;
+  margin: 18px auto;
+  overflow: hidden;
+  border: 1px solid #e9ddd2;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #f5eee7 8%, #fbf8f3 35%, #f0e7de 62%, #f5eee7 92%);
+  background-size: 220% 100%;
+  user-select: none;
+}
+.letter-editor .letter-image-upload-placeholder .letter-image-placeholder {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #8a7569;
+  font: 600 11px/1.4 system-ui, sans-serif;
+}
+.letter-editor .letter-image-upload-placeholder .letter-image-placeholder-icon { font-size: 25px; opacity: .78; }
+.letter-editor .letter-image-upload-placeholder .letter-image-placeholder-label { letter-spacing: .01em; }
+.letter-editor .letter-image-upload-placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.58) 48%, transparent 72%);
+  transform: translateX(-100%);
+  animation: letter-image-shimmer 1.35s ease-in-out infinite;
+}
+.letter-editor img.letter-editor-image.is-loading,
+.letter-editor img.letter-editor-image.is-error {
+  width: min(100%, 640px);
+  min-height: 150px;
+  aspect-ratio: 16 / 10;
+  border: 1px solid #e9ddd2;
+  background: linear-gradient(110deg, #f5eee7 8%, #fbf8f3 35%, #f0e7de 62%, #f5eee7 92%);
+  background-size: 220% 100%;
+  animation: letter-editor-image-shimmer 1.35s ease-in-out infinite;
+  object-fit: contain;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+}
+.letter-editor img.letter-editor-image.is-error { animation: none; background: #f1e8de; color: transparent; font-size: 0; line-height: 0; }
+@keyframes letter-editor-image-shimmer { to { background-position: -220% 0; } }
+@media (prefers-reduced-motion: reduce) { .letter-editor img.letter-editor-image.is-loading, .letter-editor .letter-image-upload-placeholder { animation: none; background-position: center; } .letter-editor .letter-image-upload-placeholder::after { animation: none; transform: none; opacity: .24; } .letter-editor img.letter-editor-image { transition: none; } }
+
+
+/* La búsqueda reactiva actualiza solo este contenedor; conserva input, foco y scroll. */
+.letter-list-results { min-width: 0; transition: opacity .14s ease; }
+.letter-list-results.is-searching { opacity: .68; }
+.search-status { min-width: 0; min-height: 1em; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.search-row input { flex: 1 1 280px; min-width: 0; }
+.search-row { min-width: 0; }
+
+/* v41 — carga discreta en ambos avatares y sellos sin panel cuadrado superpuesto. */
+.user-mini .avatar.has-image {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: linear-gradient(110deg, var(--surface-tint), var(--paper-2), var(--surface-tint));
+}
+.user-mini .avatar.has-image .avatar-image-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  opacity: 1;
+  transition: opacity .16s ease;
+}
+.user-mini .avatar.has-image img {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+.user-mini .avatar.has-image:not(.is-loading) img { opacity: 1; }
+.user-mini .avatar.has-image:not(.is-loading) .avatar-image-placeholder { opacity: 0; }
+.user-mini .avatar.has-image.is-loading::before,
+.profile-avatar-preview.is-loading::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.58) 48%, transparent 72%);
+  transform: translateX(-100%);
+  animation: avatar-preview-shimmer 1.25s ease-in-out infinite;
+}
+.profile-avatar-preview.is-loading::before { z-index: 2; }
+.user-mini .avatar.has-image.is-loading::after,
+.profile-avatar-preview.is-loading::after {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border: 2px solid rgba(126,91,75,.2);
+  border-top-color: rgba(126,91,75,.82);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: letter-stamp-spin .8s linear infinite;
+}
+.user-mini .avatar.has-image.is-loading img { opacity: 0; }
+.letter-stamp.has-image.is-loading .letter-stamp-fallback {
+  background: transparent !important;
+  border-radius: inherit;
+}
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::before {
+  border-radius: inherit;
+}
+.letter-stamp.has-image:not(.is-loading) .letter-stamp-fallback { display: none; }
+
+/* El texto de la carta mantiene un único tono y rasterizado de principio a fin. */
+.letter-paper {
+  background-color: #fffdf8 !important;
+  background-image: none !important;
+}
+html[data-theme="dark"] .letter-paper { background-color: #f4eee5 !important; }
+.letter-paper .letter-body {
+  color: #352c27 !important;
+  opacity: 1 !important;
+  filter: none !important;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
+  font-weight: 400;
+}
+.letter-paper .letter-body :where(p, div, span, strong, b, em, i, u, li, blockquote) {
+  color: inherit !important;
+  opacity: 1 !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+.letter-paper .letter-body blockquote {
+  color: inherit !important;
+  background: #f8f1e9;
+}
+html[data-theme="dark"] .letter-paper .letter-body,
+html[data-theme="dark"] .letter-paper .letter-body blockquote {
+  color: #352c27 !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .user-mini .avatar.has-image.is-loading::before,
+  .profile-avatar-preview.is-loading::before { animation: none; transform: none; opacity: .22; }
+  .user-mini .avatar.has-image.is-loading::after,
+  .profile-avatar-preview.is-loading::after { animation: none; border-top-color: rgba(126,91,75,.48); }
+  .user-mini .avatar.has-image img { transition: none; }
+}
+
+
+/* v41 — la carga del avatar de la barra lateral conserva el mismo patrón circular. */
+.user-mini .avatar.has-image {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+}
+
+/* El estado de carga del sello usa solo el indicador redondo: sin panel cuadrado detrás. */
+.letter-stamp.has-image.is-loading,
+.letter-stamp.has-image.is-loading .letter-stamp-fallback {
+  background: transparent !important;
+}
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::before {
+  background: none !important;
+  animation: none !important;
+  transform: none !important;
+}
+.letter-stamp.has-image.is-loading .letter-stamp-fallback-mark { display: none; }
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+  left: 50%;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  transform: translate(-50%, -50%);
+  border-width: 2px;
+  border-color: rgba(126, 91, 75, .22);
+  border-top-color: rgba(126, 91, 75, .88);
+  border-radius: 50%;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+html[data-theme="dark"] .letter-stamp.has-image.is-loading,
+html[data-theme="dark"] .letter-stamp.has-image.is-loading .letter-stamp-fallback {
+  background: transparent !important;
+}
+html[data-theme="dark"] .letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+  border-color: rgba(243, 220, 207, .24);
+  border-top-color: rgba(243, 220, 207, .9);
+}
+
+/* Color y rasterizado uniformes para cualquier etiqueta de texto de la carta. */
+.letter-paper .letter-body,
+.letter-paper .letter-body :where(*) {
+  color: #352c27 !important;
+  -webkit-text-fill-color: #352c27 !important;
+  opacity: 1 !important;
+  filter: none !important;
+  text-shadow: none !important;
+  mix-blend-mode: normal !important;
+}
+.letter-paper .letter-body {
+  font-synthesis: none;
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+.letter-paper .letter-body :where(p, div, li, blockquote) {
+  background-image: none !important;
+  -webkit-text-fill-color: #352c27 !important;
+}
+.letter-paper .letter-body blockquote {
+  background: #f8f1e9 !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .letter-stamp.has-image.is-loading .letter-stamp-fallback::after { animation: none; }
+}
+
+/* v42 — el spinner del sello conserva su anclaje central durante toda la rotación.
+   No reutiliza letter-stamp-spin, cuya transformación solo contiene rotate(). */
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+  left: 50%;
+  top: 50%;
+  margin: 0;
+  transform: translate(-50%, -50%) rotate(0deg);
+  transform-origin: center center;
+  animation: letter-stamp-centered-spin .8s linear infinite;
+  will-change: transform;
+}
+@keyframes letter-stamp-centered-spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+    animation: none;
+    transform: translate(-50%, -50%);
+    will-change: auto;
+  }
+}
+
+/* v43 — no mostrar las iniciales detrás del spinner del avatar lateral. */
+.user-mini .avatar.has-image.is-loading .avatar-image-placeholder {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  text-shadow: none !important;
+}
+.user-mini .avatar.has-image.is-loading::after {
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-width: 2px;
+  border-color: rgba(126, 91, 75, .28);
+  border-top-color: rgba(126, 91, 75, .94);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .18);
+}
+html[data-theme="dark"] .user-mini .avatar.has-image.is-loading::after {
+  border-color: rgba(243, 220, 207, .3);
+  border-top-color: rgba(243, 220, 207, .96);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .18);
+}
+
+
+/* v44 — el avatar lateral reutiliza el mismo giro centrado del letter-stamp.
+   El indicador se mantiene fijo en el centro incluso al restaurar un nodo cacheado. */
+.user-mini .avatar.has-image.is-loading::after {
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  transform: translate(-50%, -50%) rotate(0deg);
+  transform-origin: center center;
+  animation: letter-stamp-centered-spin .8s linear infinite;
+  will-change: transform;
+  z-index: 4;
+}
+@media (prefers-reduced-motion: reduce) {
+  .user-mini .avatar.has-image.is-loading::after {
+    animation: none;
+    transform: translate(-50%, -50%);
+    will-change: auto;
+  }
+}

@@ -43,7 +43,22 @@ html[data-theme="dark"] .btn-primary:hover {
   box-shadow: var(--shadow);
 }
 .skip-link:focus { transform: translateY(0); }
-.topbar h1:focus { outline: 2px solid var(--accent-2); outline-offset: 5px; border-radius: 3px; }
+#page-heading,
+#page-heading:focus,
+#page-heading:focus-visible {
+  background: transparent !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+.app-shell .page-heading,
+.app-shell .page-heading:focus,
+.app-shell .page-heading:focus-visible {
+  background: transparent;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
 .mobile-nav-close { display: none; flex: 0 0 42px; }
 .mobile-nav-close:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 3px; }
 

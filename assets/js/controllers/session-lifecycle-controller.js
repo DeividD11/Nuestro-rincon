@@ -6,6 +6,15 @@ export class SessionLifecycleController {
     if (this.sessionChannel) {
       this.sessionChannel.onmessage = event => {
         const message = event.data || {};
+        if (message.type === 'sessions-revoked-except-current' && message.currentSessionId
+          && message.currentSessionId !== this.session?.sessionId) {
+          if (readPendingRecovery()) {
+            this._sessionRevokedWhileRecoveryPending = true;
+            return;
+          }
+          this.forceLogout();
+          return;
+        }
         if (message.type === 'session-revoked' && message.sessionId && message.sessionId === this.session?.sessionId) {
           // La pantalla de entrega del código tiene prioridad: no se reemplaza
           // antes de que la persona pueda copiarlo. La sesión se descarta al
@@ -36,6 +45,8 @@ export class SessionLifecycleController {
     this.letterThreadCache.clear();
     this.seenRoutes.clear();
     this.state.user = user;
+    this.state.profile = { avatarUrl: null, avatarPath: null };
+    this.state.localDraftPreview = null;
     this.state.letters = [];
     this.state.pagination = { cursor: null, loadedCount: 0, limit: 40, hasMore: false, loading: false };
     this.state.selectedLetter = null;

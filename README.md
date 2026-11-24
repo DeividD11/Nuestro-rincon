@@ -31,7 +31,7 @@ El proyecto combina una interfaz estática —publicable directamente en **GitHu
 Su arquitectura mantiene separados los modelos, las vistas, los controladores, los repositorios y los servicios. Las operaciones privadas se realizan en Supabase Edge Functions; el navegador no recibe credenciales privilegiadas ni decide por sí mismo la identidad con la que se ejecuta una operación.
 
 > [!IMPORTANT]
-> La lectura remota de solo metadatos del 21 de noviembre de 2026 confirma 23 migraciones registradas, `auth-api` v11 y `letters-api` v8. El inventario local v25 incluye 25 archivos SQL: 15 timestamps coinciden, tres archivos son legacy/no canónicos y siete propuestas locales no aparecen en el ledger. La inspección remota encontró RPC/objetos relacionados con propuestas anteriores, pero no certifica la equivalencia íntegra de cada sentencia. Esto es deriva entre historial, esquema y código; no autoriza a volver a ejecutar DDL. Las Edge Functions activas siguen siendo versiones anteriores al código local. Genera `npm run supabase:reconcile:readonly` y sigue [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md) antes de reparar el ledger o desplegar funciones. Este ZIP no es una restauración integral de una base nueva.
+> **Estado remoto comprobado y actualizado el 24 de noviembre de 2026:** proyecto `tiqbmuubpbmxqvtkcdhq` activo; `auth-api` v11 y `letters-api` v11 en estado ACTIVE. La v11 conserva los exports ESM nombrados `sendNotification` y `setVapidDetails` de `web-push@4.0.0`, y añade diagnóstico seguro de errores de Storage sin registrar contenido privado. El ledger remoto contiene 25 migraciones. El inventario local v35 contiene 28 archivos SQL: 17 timestamps coinciden con el ledger, tres archivos son legacy/no canónicos y ocho propuestas locales siguen sin una entrada homónima que deba reconciliarse. La columna `public.user_profiles.avatar_path` ya existe en producción. La migración `20261123205422_revoke_other_app_sessions_atomically.sql` se aplicó y verificó: crea un RPC `SECURITY INVOKER`, ejecutable solo por `service_role`, y el índice de `push_subscriptions.session_id`. El bucket privado `private-media` está creado y verificado en el ledger mediante `20261124052017_ensure_private_media_bucket.sql`: privado, límite de 5 MiB y MIME JPEG/PNG/WebP. Los logs confirman una URL firmada, una carga PUT y la verificación HEAD con HTTP 200; la función de perfil también confirmó la escritura de la ruta del avatar. No ejecutes ninguna de las ocho propuestas locales sin un diff completo ni uses este ZIP como restauración integral de una base nueva. Consulta [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md), [`docs/MEDIA_AND_AVATARS.md`](docs/MEDIA_AND_AVATARS.md) y [`docs/SYNC_RELEASE_RUNBOOK.md`](docs/SYNC_RELEASE_RUNBOOK.md).
 
 <details>
   <summary><strong>Contenido de esta documentación</strong></summary>
@@ -62,6 +62,8 @@ Su arquitectura mantiene separados los modelos, las vistas, los controladores, l
 - Guardado de borradores y autoguardado local/remoto.
 - Envío de cartas y respuestas dentro de conversaciones.
 - Navegación entre cartas y respuestas del mismo hilo sin recargar la aplicación ni volver a solicitar cada carta ya cargada.
+- Hasta seis imágenes por carta o respuesta; se redimensionan y rasterizan en el navegador antes de subirlas y se muestran con límites responsive.
+- Miniaturas privadas optimizadas para `letter-stamp` (96 × 96, calidad 72 cuando Storage Image Transformations está disponible), con carga diferida, decodificación asíncrona, placeholder animado y fallback automático al original.
 - Bandejas de entrada y enviados.
 - Organización mediante Borradores, Favoritos, Archivo y Papelera.
 - Recuperación de cartas descartadas y eliminación definitiva conforme a las reglas compartidas.
@@ -90,7 +92,8 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 - Los intentos de invitación se limitan por IP anonimizada y huella del código; el backend registra auditoría sin guardar el código ni la IP en claro.
 - Límite de dos cuentas activas; el registro no admite altas sin una invitación válida.
 - Inicio y cierre de sesión.
-- Gestión y revocación de sesiones/dispositivos.
+- Gestión, revocación individual y revocación masiva de todas las demás sesiones sin cerrar la sesión actual.
+- Avatar de perfil desde una imagen local, con optimización, cambio y eliminación.
 - Renovación de sesión y control de expiración.
 - Cambio de nombre visible, nombre de usuario, correo informativo y contraseña.
 - Recuperación de contraseña con un código de respaldo individual de un solo uso durante el registro, compatible con la versión `auth-api` v11 actualmente desplegada.
@@ -109,6 +112,8 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 - Navegación lateral adaptable.
 - Estados de carga, error, vacío y confirmación.
 - Diálogos accesibles para acciones importantes y avisos emergentes descartables.
+- Modales con fondo inmóvil, bloqueo del desplazamiento de la página y desplazamiento contenido en la tarjeta.
+- La vista de Borradores muestra inmediatamente la copia local al salir del editor, sin esperar la sincronización remota.
 - Preferencias persistidas por cuenta.
 - Respeto por `prefers-reduced-motion` y áreas seguras de dispositivos móviles.
 
@@ -122,8 +127,10 @@ La copia local permite recuperar el texto aunque la última petición de red no 
 | Hosting | GitHub Pages | Publicación del frontend estático |
 | API privada | Supabase Edge Functions | Autenticación propia y operaciones de dominio |
 | Persistencia | Supabase PostgreSQL | Cuentas, sesiones, cartas, preferencias, notificaciones y suscripciones Web Push |
+| Archivos privados | Supabase Storage | Imágenes de cartas y avatares en bucket privado con URL firmada y caducidad |
 | Seguridad de datos | PostgreSQL RLS y funciones SQL | Restricción de acceso y reglas transaccionales |
 | Persistencia local | localStorage e IndexedDB | Copias de emergencia y recuperación de borradores |
+| Procesamiento de imágenes | Canvas / ImageBitmap | Redimensionamiento, rasterización y eliminación de metadatos antes de subir |
 | Automatización | GitHub Actions | Verificación, pruebas y despliegue continuo |
 | Pruebas | Node.js Test Runner | Pruebas de contrato, seguridad, fiabilidad y responsive |
 
@@ -357,18 +364,22 @@ Supabase inyecta la credencial de servidor en el runtime de Edge Functions. El c
 
 ### Estado del proyecto existente
 
-La documentación histórica registra el proyecto Supabase asociado como saludable en la revisión del **19 de noviembre de 2026**. Una lectura remota posterior del **21 de noviembre de 2026** está documentada en [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md) y detectó diferencias entre el historial de migraciones, el esquema y las Edge Functions desplegadas. El inventario histórico indicaba:
+La inspección remota más reciente se realizó el **24 de noviembre de 2026** en el proyecto `tiqbmuubpbmxqvtkcdhq`. El estado actual, historial de migraciones y límites de reconciliación se detallan en [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md).
 
-- PostgreSQL 17.
-- 23 migraciones registradas en el historial remoto.
-- `auth-api` v11 y `letters-api` v8 en estado `ACTIVE` en la revisión del 19 de noviembre de 2026.
-- RLS activado en las tablas privadas.
+- PostgreSQL 17 y proyecto `ACTIVE_HEALTHY`.
+- `auth-api` v11 y `letters-api` v11 en estado `ACTIVE`.
+- 25 migraciones registradas en el ledger remoto.
+- `public.user_profiles.avatar_path` y su restricción de propietario/formato existen en producción.
+- El bucket `private-media` quedó registrado por `20261124052017_ensure_private_media_bucket`: privado, límite de 5 MiB y MIME JPEG/PNG/WebP.
+- Los logs de Storage confirman URL firmada POST 200, carga PUT 200 y comprobación HEAD 200; la escritura de la ruta del avatar también respondió 200. La prueba de inserción/lectura de imágenes dentro de una carta entre las dos cuentas sigue pendiente de validación manual.
+- La migración `20261123205422_revoke_other_app_sessions_atomically.sql` se aplicó en producción. Su RPC revoca sesiones, refresh tokens y push subscriptions de forma atómica, excluyendo la sesión actual.
+- El inventario local v35 contiene 28 archivos SQL: 17 timestamps coinciden con el ledger, tres ficheros legacy/no canónicos y ocho propuestas anteriores sin entrada homónima. Ocho timestamps remotos todavía no tienen archivo local homónimo.
 
-El inventario local v25 incluye 25 archivos SQL frente a 23 entradas remotas: 15 timestamps comunes, tres ficheros legacy/no canónicos y siete propuestas locales sin entrada de ledger; ocho timestamps remotos no tienen archivo local homónimo. La lectura de solo metadatos del 21 de noviembre encontró en la base RPC, tablas de recibos, índices de cursor y triggers relacionados con propuestas previas, pero no certificó que todo el DDL de las siete propuestas locales sea idéntico al estado remoto. Las Edge Functions desplegadas siguen en versiones anteriores y no llaman a todas las RPC locales. Por tanto:
+Por tanto:
 
-- No ejecutes `supabase db push --remote` ni apliques ninguna de las siete propuestas locales sin un diff completo. Compara primero las definiciones y permisos exactos; puede hacer falta reconciliar el ledger sin volver a ejecutar DDL existente.
-- No despliegues `auth-api` o `letters-api` desde el ZIP hasta validar el conjunto completo en un entorno aislado.
-- Para publicar solo el frontend, comprueba antes que sus llamadas sean compatibles con las Edge Functions que siguen activas.
+- No ejecutes `supabase db push --remote` ni apliques ninguna de las ocho propuestas anteriores sin un diff completo. Compara primero las definiciones y permisos exactos; puede hacer falta reconciliar el ledger sin volver a ejecutar DDL existente.
+- No despliegues `auth-api` desde este ZIP; permanece en v11 y no forma parte de este cambio.
+- La configuración del bucket quedó aplicada y registrada. La primera prueba de uso de la interfaz debe confirmar que el avatar persiste al recargar y que las imágenes de carta se leen correctamente desde la otra cuenta.
 - No uses este paquete como restauración completa de una base Supabase vacía.
 
 El estado de referencia y las limitaciones se documentan en [`docs/REMOTE_BASELINE.md`](docs/REMOTE_BASELINE.md).
@@ -480,3 +491,82 @@ El paquete incorpora tres niveles de pruebas:
 La migración `20261119064344_auth_attempt_rate_limits.sql` y la actualización de `auth-api` que la usa son una propuesta pendiente de validar en un proyecto/branch aislado. No desplegar esa versión de `auth-api` antes de aplicar y probar la migración en el mismo entorno.
 
 Consulta [`docs/SECURITY_TESTING.md`](docs/SECURITY_TESTING.md) para preparar los escenarios sin tocar producción y [`docs/DB_REBUILD.md`](docs/DB_REBUILD.md) para entender la diferencia entre el historial remoto y los archivos SQL incluidos.
+
+
+## Imágenes privadas y avatar
+
+La implementación local v36 permite adjuntar hasta seis imágenes por carta/respuesta, muestra la primera como miniatura en `letter-stamp` y permite elegir, cambiar o quitar un avatar. La fuente local de `letters-api` añade la generación de URL firmada para esa primera miniatura; la función remota continúa en v11 hasta que se publique este cambio. El bucket `private-media` se encuentra creado y registrado por la migración `20261124052017_ensure_private_media_bucket.sql`; es privado, limita los objetos a 5 MiB y permite `image/jpeg`, `image/png` y `image/webp`. Los logs de Supabase anteriores confirman carga firmada y verificación de un objeto de avatar con HTTP 200. La columna `user_profiles.avatar_path` ya existía en producción; no se reejecutó la migración local histórica que la declara. La lectura de imágenes de carta desde ambas cuentas sigue requiriendo validación manual. Consulta [`docs/MEDIA_AND_AVATARS.md`](docs/MEDIA_AND_AVATARS.md).
+
+### Ajustes de Configuración v35
+
+La corrección de sesiones incluida en v34 evita los ciclos de petición por sesión: `sessions:revoke-others` llama una vez al RPC `revoke_other_app_sessions`, que bloquea y revoca las demás sesiones, invalida sus refresh tokens y elimina sus suscripciones push en una transacción. La UI actualiza `session-list` de forma optimista, conserva el desplazamiento y no vuelve a renderizar toda la vista. El botón se deshabilita durante la operación y se restaura la lista si el servidor rechaza la acción.
+
+La subida de avatares e imágenes usa `letters-api` v11, que reconoce `media:prepare-upload`, `media:sign-letter-image`, `profile:avatar:set` y `profile:avatar:remove`; el error anterior “Acción no reconocida” se debía a que producción todavía ejecutaba v8 y no al JPEG de 55 KB. `profile-avatar-preview` muestra la imagen local antes de subir y conserva la anterior si falla la operación. El botón `tool-btn image-tool-btn` se rediseñó con icono SVG, etiqueta visible, foco accesible y adaptación a tema oscuro/tamaños pequeños.
+El avatar persistido también se representa dentro del `span.avatar` de la barra lateral y se actualiza al confirmar el cambio. El encabezado de página deja de mostrar el marco de foco rosado. El botón de revocación masiva solo se renderiza cuando existe otra sesión activa además de la actual. En teléfonos pequeños, `tool-btn image-tool-btn` se convierte en un control cuadrado de 44 px con icono y nombre accesible, sin texto desbordado. Guardar borrador dirige a Borradores cuando se confirma una copia local o remota; desde una tarjeta de Borradores, Revisar y enviar abre directamente `modal-card`, mientras que Seguir escribiendo mantiene la ruta del editor.
+
+### Optimización de imágenes y miniaturas v36
+
+La vista de `profile-avatar-preview` utiliza un placeholder con brillo suave durante la carga de la foto y no muestra el texto alternativo como contenido provisional. Las imágenes se solicitan con prioridad alta para esa vista y, si un recurso falla, se conserva el fallback de iniciales. El procesador limita las exportaciones de prueba a unas pocas iteraciones adaptativas en lugar de probar decenas de combinaciones secuenciales. Los avatares se optimizan hasta 512 px / 512 KiB; las imágenes de carta hasta 1.600 px / 3 MiB. La subida privada sigue siendo una única petición PUT con URL temporal.
+
+La lista de correspondencia y el inicio reciben `firstImageUrl` para la primera imagen insertada en el HTML de cada carta. `letters-api` comprueba que la ruta corresponde a la carta o su hilo y al remitente antes de firmarla; como máximo se firma una miniatura por carta y se limita el trabajo concurrente a seis cartas. La vista valida el origen de Supabase y muestra el icono del sello si la miniatura falla. Las demás imágenes siguen dentro del cuerpo de la carta y no se sustituyen por miniaturas adicionales.
+
+**Publicación pendiente:** el ZIP incluye el cambio local de `supabase/functions/letters-api/index.ts`, pero no se ha desplegado ni modificado el proyecto remoto durante esta entrega. Para que `letter-stamp` muestre imágenes en producción, primero debe publicarse la nueva fuente de `letters-api` y después el frontend v36 en GitHub Pages. No se requiere migración SQL ni cambio de bucket.
+
+
+### Correcciones de lectura y miniaturas v37 (24 de noviembre de 2026)
+
+El papel de lectura ahora usa una jerarquía tipográfica consistente, una medida de línea limitada, espaciado de párrafos y listas, y reglas específicas para escritorio, móviles y la vista previa de envío. El contenido largo puede crecer sin quedar recortado por la hoja. Las imágenes del editor conservan su posición y muestran un placeholder animado durante la decodificación; el texto alternativo ya no utiliza el nombre local del archivo. Se aplica el mismo texto genérico al sanitizar en cliente y servidor, incluidas cartas y borradores ya guardados.
+
+Para los sellos, `letter-stamp` mantiene su fallback hasta que carga la primera miniatura privada firmada. La fuente local de `letters-api` incluida en v36/v37 genera `firstImageUrl` únicamente después de validar la relación entre objeto, carta/hilo y remitente. **La publicación de esta función sigue siendo necesaria**: según la última comprobación disponible, el proyecto remoto conserva `letters-api` v11. No se desplegó ninguna Edge Function ni se modificó el esquema remoto durante v37. No requiere migración SQL ni hacer público `private-media`.
+
+
+### Búsqueda reactiva y estados de imagen v38 (24 de noviembre de 2026)
+
+Los buscadores de Buzón, Enviadas, Borradores, Favoritos, Archivo y Papelera ejecutan consultas en vivo con una pausa breve de 170 ms, pero ya no vuelven a renderizar la aplicación completa. Solo se sustituye `letter-list-results`, manteniendo el control de búsqueda, el foco, el encabezado y el scroll. Cada petición tiene un ID de secuencia para descartar respuestas antiguas que lleguen fuera de orden. El término es temporal: no se guarda en el navegador ni se conserva al cambiar de apartado; el campo desactiva autocompletado y autocorrección.
+
+Al abrir una carta, una imagen que todavía no tenga una URL firmada conserva el placeholder `Cargando imagen…` en lugar de mostrar prematuramente `Imagen no disponible`. El error solo aparece después de un fallo real de carga. En las tarjetas, `letter-stamp` sigue mostrando la primera imagen insertada mediante `firstImageUrl`; la Edge Function local ya contiene esa firma privada y valida la carta/hilo y el remitente. La publicación remota de `letters-api` sigue pendiente según el último estado comprobado (v11); sin ella, el frontend no puede obtener las URL privadas y conserva el sello de respaldo.
+
+Esta entrega no añade migraciones SQL, no cambia el bucket y no modifica el proyecto remoto.
+
+### Miniaturas fiables en Borradores y carga inmediata v39 (24 de noviembre de 2026)
+
+Las tarjetas ya no dependen exclusivamente de que el listado incluya `firstImageUrl`. Si ese campo no llega (por ejemplo, porque la Edge Function remota aún no incorpora el enriquecimiento de lista), el frontend localiza la primera ruta `data-image-path` en el cuerpo del borrador y solicita una URL temporal mediante `media:sign-letter-image`. El servidor sigue validando sesión, ID de carta y ruta privada; el navegador solo acepta URLs HTTPS del proyecto Supabase y del bucket `private-media`. Las firmas se agrupan con un máximo de seis solicitudes concurrentes y se reutilizan temporalmente. Así, `letter-stamp` puede mostrar la miniatura en Borradores con el endpoint de firma ya disponible en `letters-api` v11, sin hacer público Storage ni requerir una nueva migración SQL.
+
+Al elegir una imagen desde el editor, el marco `Cargando imagen…` se inserta inmediatamente, antes de compresión, generación de URL de subida y transferencia. El placeholder es temporal y el sanitizador lo excluye del HTML persistido; tras completar la subida se sustituye por el `<img>` real, que mantiene el estado animado hasta su decodificación. Si la carga falla, se retira el placeholder y se conserva el texto de la carta.
+
+Esta actualización no despliega Edge Functions ni modifica el proyecto remoto o el esquema SQL. `firstImageUrl` sigue siendo una optimización opcional para las listas; el fallback del frontend funciona con el endpoint autenticado `media:sign-letter-image` ya presente en la versión remota v11 verificada anteriormente.
+
+
+### Miniaturas rápidas y estado de carga del sello v40 (24 de noviembre de 2026)
+
+`letter-stamp-fallback` conserva el espacio y muestra un brillo animado y un indicador de carga, con el mismo patrón visual que `avatar-preview-placeholder`. El indicador permanece mientras la miniatura se descarga y decodifica; si la carga falla se conserva un estado neutral. Las animaciones respetan `prefers-reduced-motion`.
+
+Las tarjetas solicitan una imagen privada transformada de 96 × 96 px, con recorte `cover` y calidad 72, en vez del archivo original completo. Las imágenes se cargan de forma diferida (`loading=lazy`), con decodificación asíncrona y prioridad baja; la carta conserva su imagen original y calidad completa. Si Image Transformations no está habilitado o la URL transformada falla, el frontend solicita la URL firmada original, mantiene el placeholder durante el cambio y evita dejar un sello roto.
+
+La fuente local de `letters-api` incorpora `media:sign-letter-thumbnail`, que comprueba la sesión, la participación del usuario, la carta/respuesta y la ruta privada antes de emitir la URL. **Publicación pendiente:** desplegar la nueva `letters-api` y después el frontend v40 en GitHub Pages. No se agregó una migración SQL ni se hizo público el bucket. Image Transformations depende del plan y de su activación en Storage; si no está disponible, la funcionalidad continúa con el original, aunque sin la reducción de transferencia. Revisa Storage → Settings / Usage para conocer la disponibilidad y el consumo del proyecto.
+
+
+### Optimización global de imágenes y caché de avatar v41 (24 de noviembre de 2026)
+
+La barra lateral usa ahora el mismo indicador circular y brillo del avatar de Configuración. Los nodos de ambas imágenes se conservan entre cambios de ruta; al volver a Configuración no se crea otra etiqueta `<img>` ni se vuelve a solicitar/decodificar la foto si la identidad del avatar sigue siendo la misma. La vista de Configuración consulta `AvatarNodeCache` correctamente y no genera una imagen de reemplazo antes de restaurar el nodo existente. Al cambiar la foto, la vista previa local permanece en pantalla mientras se precarga y decodifica la URL privada nueva.
+
+`letters-api` genera URL de avatar transformadas a 256 × 256 y calidad 78, y URL de lectura de adjuntos a 1.440 × 1.440 y calidad 78. Los objetos originales del bucket privado no se alteran. Si Storage Image Transformations no está disponible, los endpoints recurren a la URL firmada original. La Edge Function mantiene una caché LRU acotada de URL firmadas por ruta y variante, hasta 2.048 entradas y con vencimiento antes de la expiración del token; además deduplica firmas idénticas simultáneas para evitar llamadas repetidas dentro de la misma instancia. El navegador mantiene los nodos de avatar y las miniaturas cercanas a pantalla se firman en lotes de cuatro.
+
+El sello elimina el panel de fondo cuadrado durante la carga y deja únicamente el indicador circular sobre un fondo transparente. El contenido de `letter-body` utiliza un fondo sólido y normaliza el color de texto, `-webkit-text-fill-color`, opacidad, filtros y sombras para evitar variaciones visuales entre bloques y al final de una carta.
+
+**Publicación pendiente:** v41 incorpora cambios de `letters-api` además del frontend. No se desplegó Supabase ni se cambió el esquema o el bucket en esta entrega. Para usar las transformaciones y la caché nuevas, publicar `letters-api` v41 y después el frontend v41. No requiere migración SQL. Si las transformaciones de Storage no están habilitadas en el proyecto, la aplicación conserva el acceso privado usando el original; la reducción de transferencia dependerá de que Storage permita las variantes transformadas.
+
+### Corrección de centrado del indicador del sello v42 (24 de noviembre de 2026)
+
+El spinner de `letter-stamp-fallback` utiliza ahora una animación independiente que conserva `translate(-50%, -50%)` tanto al inicio como al final de cada giro. Antes, la animación genérica solo interpolaba `rotate(360deg)`, sobrescribía la traslación de centrado y hacía que el círculo viajara diagonalmente antes de volver a su posición. La nueva animación mantiene el centro fijo, conserva el giro uniforme y desactiva el movimiento respetando `prefers-reduced-motion`. No cambia las solicitudes de imágenes, el backend, Storage ni el esquema de datos; basta con publicar el frontend v42 en GitHub Pages.
+
+### Limpieza del placeholder de avatar en la barra lateral v43 (24 de noviembre de 2026)
+
+Mientras el avatar de la barra lateral está cargando, las iniciales del usuario ya no se dibujan detrás del indicador circular. El texto del placeholder se vuelve transparente y se anula su tamaño tipográfico únicamente durante `.is-loading`; si la carga falla y se retira ese estado, las iniciales vuelven a quedar disponibles como fallback. El spinner se amplía ligeramente a 16 px, gana contraste en temas claro y oscuro y permanece centrado mediante márgenes simétricos, por encima del brillo de carga. No cambia la URL, el caché, la compresión, el backend, Storage ni el esquema de datos. Basta con publicar el frontend v43 en GitHub Pages.
+
+
+### Fiabilidad del avatar lateral v44 (24 de noviembre de 2026)
+
+El avatar de `user-mini` ahora distingue entre reutilizar una imagen válida y reconstruir un nodo que perdió su `<img>`. Cuando el estado contiene una URL pero el nodo cacheado solo conserva las iniciales, el render crea una imagen nueva y no vuelve a sustituirla por el nodo antiguo. Al restaurar una imagen ya descargada se comprueba `complete`/`naturalWidth` y se espera su decodificación; así no queda oculta por un `is-loading` cuyo evento `load` ocurrió antes de volver a insertarla. Si una URL privada falla, la app solicita una firma nueva una sola vez por ruta del avatar. El indicador circular usa la misma animación con traslación centrada de `letter-stamp-fallback`, sin deriva diagonal.
+
+Es una corrección de frontend y gestión de nodos: no cambia la base de datos, el bucket ni las Edge Functions.
