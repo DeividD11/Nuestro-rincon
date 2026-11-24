@@ -232,7 +232,10 @@ test('200 % de zoom equivalente y reflow a 320 px CSS no pierden contenido ni ac
 test('los controles de formato y las acciones del editor son alcanzables mediante teclado', async ({ page }) => {
   await renderFixture(page, 'write', 'light');
   const toolbarButtons = page.locator('.editor-toolbar button');
-  await expect(toolbarButtons).toHaveCount(6);
+  // Seis acciones de formato/alineación más el control accesible para insertar imágenes.
+  await expect(toolbarButtons).toHaveCount(7);
+  await expect(page.locator('.editor-toolbar [data-action="choose-letter-image"]'))
+    .toHaveAttribute('aria-label', 'Insertar imagen en la carta');
   for (let index = 0; index < await toolbarButtons.count(); index++) {
     await toolbarButtons.nth(index).focus();
     await expect(toolbarButtons.nth(index)).toBeFocused();

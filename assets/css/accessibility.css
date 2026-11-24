@@ -106,3 +106,27 @@ html[data-theme="dark"] .letter-editor:empty:before { color: #b7aaa1; opacity: 1
   .toast { transition: none !important; animation: none !important; }
   html { scroll-behavior: auto !important; }
 }
+
+/* -------------------------------------------------------------------------- */
+/* WCAG 2.2 AA: correcciones detectadas por Playwright en GitHub Actions.       */
+/* -------------------------------------------------------------------------- */
+/* Estado de entrega: 4.82:1 sobre el papel claro (#fffdf8). */
+html:not([data-theme="dark"]) .letter-paper .delivery-status {
+  color: #657565;
+}
+
+/* Acción secundaria del diálogo: contraste superior a 4.5:1 en tema claro. */
+html:not([data-theme="dark"]) .nr-dialog-cancel {
+  color: #865547;
+}
+
+/* El texto de detalle debe conservar contraste AA sobre la superficie oscura. */
+html[data-theme="dark"] .nr-dialog-detail {
+  color: #b5aaa1;
+}
+
+/* El texto blanco ofrece contraste suficiente en el botón de confirmación peligroso. */
+.nr-dialog-backdrop[data-tone="danger"] .nr-dialog-confirm {
+  color: #ffffff;
+}
+
