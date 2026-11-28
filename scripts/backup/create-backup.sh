@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-required=(NR_BACKUP_PROJECT_REF NR_BACKUP_DATABASE_URL NR_BACKUP_AGE_RECIPIENT NR_BACKUP_S3_ENDPOINT NR_BACKUP_S3_BUCKET NR_BACKUP_S3_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY)
+required=(NR_BACKUP_PROJECT_REF NR_BACKUP_DATABASE_URL NR_BACKUP_STORAGE_SERVICE_KEY NR_BACKUP_AGE_RECIPIENT NR_BACKUP_S3_ENDPOINT NR_BACKUP_S3_BUCKET NR_BACKUP_S3_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY)
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
     printf 'Falta la variable requerida: %s\n' "$name" >&2
@@ -93,7 +93,10 @@ if [[ "$migration_history_before" != "$migration_history_after" ]]; then
   exit 1
 fi
 
-NR_BACKUP_ROW_COUNTS="$row_counts_after" NR_BACKUP_MIGRATION_HISTORY="$migration_history_after" NR_BACKUP_CREATED_AT="$created_at" node --input-type=module <<'NODE' > "$work_dir/manifest.json"
+printf 'Exportando objetos privados de Storage con manifiesto SHA-256…\n'
+storage_summary="$(node "$(dirname "$0")/storage-objects.mjs" backup "$work_dir")"
+
+NR_BACKUP_ROW_COUNTS="$row_counts_after" NR_BACKUP_MIGRATION_HISTORY="$migration_history_after" NR_BACKUP_STORAGE_SUMMARY="$storage_summary" NR_BACKUP_CREATED_AT="$created_at" node --input-type=module <<'NODE' > "$work_dir/manifest.json"
 const rowCounts = JSON.parse(process.env.NR_BACKUP_ROW_COUNTS || 'null');
 if (!rowCounts || typeof rowCounts !== 'object' || Array.isArray(rowCounts)) throw new Error('No se pudieron obtener los recuentos de verificación.');
 for (const key of ['app_users','letters','letter_threads','user_sessions','user_recovery_codes','notifications']) {
@@ -103,24 +106,31 @@ const migrationHistory = JSON.parse(process.env.NR_BACKUP_MIGRATION_HISTORY || '
 if (!Array.isArray(migrationHistory) || migrationHistory.some(item =>
   !/^\d{14}$/.test(String(item?.version || '')) || (item?.name !== null && item?.name !== undefined && (typeof item.name !== 'string' || item.name.length > 160))
 )) throw new Error('El historial de migraciones no tiene un formato válido.');
+const storage = JSON.parse(process.env.NR_BACKUP_STORAGE_SUMMARY || 'null');
+if (!storage || !Number.isSafeInteger(storage.objectCount) || storage.objectCount < 0
+  || !Number.isSafeInteger(storage.totalBytes) || storage.totalBytes < 0) {
+  throw new Error('No se pudo validar el manifiesto de Storage.');
+}
 const manifest = {
   format: 'nuestro-rincon-logical-backup',
-  formatVersion: 1,
+  formatVersion: 2,
   projectRef: process.env.NR_BACKUP_PROJECT_REF,
   createdAt: process.env.NR_BACKUP_CREATED_AT,
-  scope: 'public',
-  components: ['roles.sql','schema.sql','data.sql'],
+  scope: 'public+private-media',
+  components: ['roles.sql','schema.sql','data.sql','storage-manifest.json'],
   rowCounts,
   migrationHistory,
+  storage: { bucket: 'private-media', objectCount: storage.objectCount, totalBytes: storage.totalBytes, manifest: 'storage-manifest.json' },
   encryption: 'age',
-  consistencyChecks: ['public-schema-identical-before-and-after-data-export','six-domain-table-counts-identical-before-and-after-export','migration-ledger-identical-before-and-after-export'],
+  consistencyChecks: ['public-schema-identical-before-and-after-data-export','six-domain-table-counts-identical-before-and-after-export','migration-ledger-identical-before-and-after-export','storage-objects-downloaded-and-sha256-verified'],
   notes: [
     'Logical dump generated with Supabase CLI.',
-    'Supabase-managed schemas are excluded by Supabase CLI.',
+    'Supabase-managed database schemas are excluded by Supabase CLI.',
+    'Private Storage object bytes are included as storage/objects and protected by a SHA-256 manifest.',
     'migrationHistory is archival metadata only; it is not restored into the target migration ledger.',
-    'Storage API object bytes and the Supabase migration ledger are not included.',
     'Data rows are exported by a single pg_dump data-only operation.',
     'The backup is accepted only when the public schema dump and six control counts remain stable during export.',
+    'The Storage API export is enumerated recursively; unsupported paths or MIME types abort the backup instead of being silently omitted.',
     'Restore only into a fresh isolated Supabase project after reviewing the runbook.'
   ]
 };
@@ -136,7 +146,7 @@ for file in roles.sql schema.sql data.sql manifest.json; do
     exit 1
   fi
 done
-for file in schema.sql data.sql manifest.json; do
+for file in schema.sql data.sql manifest.json storage-manifest.json; do
   if [[ ! -s "$work_dir/$file" ]]; then
     printf 'La exportación produjo un archivo vacío: %s\n' "$file" >&2
     exit 1
@@ -144,7 +154,7 @@ for file in schema.sql data.sql manifest.json; do
 done
 
 archive="$work_dir/${base}.tar.gz"
-tar -C "$work_dir" -czf "$archive" roles.sql schema.sql data.sql manifest.json
+tar -C "$work_dir" -czf "$archive" roles.sql schema.sql data.sql manifest.json storage-manifest.json storage/objects
 encrypted="$work_dir/${base}.tar.gz.age"
 age -r "$NR_BACKUP_AGE_RECIPIENT" -o "$encrypted" "$archive"
 test -s "$encrypted"

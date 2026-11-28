@@ -37,7 +37,7 @@ test('el contenedor principal no es una región viva y existen dos anunciadores 
   assert.doesNotMatch(dom, /toast\.setAttribute\('aria-live'/);
 });
 
-test('la vista incluye salto al contenido, navegación nombrada, ruta activa y encabezado enfocable', () => {
+test('la vista elimina el enlace de salto y conserva navegación nombrada, ruta activa y encabezado enfocable', () => {
   const root = { innerHTML: '' };
   const view = new AppView(root);
   view.renderShell({
@@ -45,7 +45,7 @@ test('la vista incluye salto al contenido, navegación nombrada, ruta activa y e
     user: { displayName: 'Persona' }, dashboard: { unread: 0, recent: [] },
     notifications: [], selectedLetter: null, settings: {}
   });
-  assert.match(root.innerHTML, /class="skip-link" href="#main-content"/);
+  assert.doesNotMatch(root.innerHTML, /skip-link|Saltar al contenido principal/i);
   assert.match(root.innerHTML, /<nav id="primary-navigation"[^>]*aria-label="Principal"/);
   assert.match(root.innerHTML, /data-route="inbox"[^>]*aria-current="page"/);
   assert.match(root.innerHTML, /<main[^>]*id="main-content"[^>]*tabindex="-1"/);
@@ -63,9 +63,8 @@ test('el menú móvil vuelve inerte el panel oculto y desplaza el foco antes del
   const mainInput = fakeElement('main-input');
   const sidebar = fakeElement('sidebar', element => element === sidebarLink || element === closeButton);
   const main = fakeElement('main', element => element === mainInput || element === trigger);
-  const skipLink = fakeElement('skip-link');
   const elements = {
-    '.sidebar': sidebar, '#main-content': main, '.skip-link': skipLink,
+    '.sidebar': sidebar, '#main-content': main,
     '.mobile-menu': trigger, '.mobile-nav-close': closeButton
   };
   globalThis.document = { get activeElement() { return activeElement; }, set activeElement(value) { activeElement = value; } };
@@ -88,7 +87,6 @@ test('el menú móvil vuelve inerte el panel oculto y desplaza el foco antes del
     assert.equal(main.inert, true);
     assert.equal(main.getAttribute('aria-hidden'), 'true');
     assert.equal(sidebar.inert, false);
-    assert.equal(skipLink.inert, true);
     assert.equal(trigger.getAttribute('aria-expanded'), 'true');
   } finally {
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
@@ -122,7 +120,7 @@ test('la navegación enfoca el encabezado después de renderizar la sección', a
   assert.match(source, /const shouldFocus = options\?\.focus === true/);
   assert.match(source, /focusHeading\(\)/);
   const letter = await read('../assets/js/controllers/letter-controller.js');
-  assert.match(letter, /openRoute\('sent', true, \{ focus: true \}\)/);
+  assert.match(letter, /openRoute\('sent', true, \{ focus: true, skipHistory: true \}\)/);
   assert.match(letter, /document\.addEventListener\('keydown', this\._sendPreviewKeydown, true\)/);
   assert.match(letter, /event\.key === 'Escape'/);
 });
@@ -147,7 +145,7 @@ test('el texto de metadatos y estado de entrega conserva contraste AA sobre el p
 
 test('la hoja de estilos contempla foco visible, áreas táctiles y movimiento reducido', async () => {
   const css = await readCssBundle();
-  assert.match(css, /\.skip-link:focus/);
+  assert.doesNotMatch(css, /skip-link|Saltar al contenido principal/i);
   assert.match(css, /#page-heading:focus[\s\S]*?outline: 0 !important;[\s\S]*?box-shadow: none !important;/);
   assert.match(css, /@media \(pointer: coarse\)[\s\S]*?min-width: 44px[\s\S]*?min-height: 44px/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
@@ -285,7 +283,7 @@ test('las tarjetas de la Papelera conservan nombre visible y contraste AA en amb
   assert.doesNotMatch(view, /class="letter-card-main"[^>]*aria-label=/);
   assert.match(view, /class="letter-card-main"[^>]*data-letter-id=/);
   assert.match(view, /renderLetterBodyHtml\(letter\.body \|\| ''\)/);
-  assert.match(view, /renderLetterBodyHtml\(item\.body \|\| ''\)/);
+  assert.match(view, /renderThreadItem[\s\S]*?conversation-preview-text/);
   assert.doesNotMatch(view, /\bfmtBody\b/);
   assert.match(appCss, /\.status-pill\{[^}]*background:#f2e8df;color:#80513f\}/);
   assert.match(appCss, /\.status-pill\.unread\{background:#f4dfd8;color:#8c4c40\}/);

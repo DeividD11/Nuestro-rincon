@@ -56,6 +56,12 @@ export class SessionLifecycleController {
     this.state.sessions = [];
     this.state.invitation = null;
     this.state.settings = { theme: 'system', time_zone: 'America/Bogota', in_app_notifications_enabled: true };
+    this._themePreferenceDirty = false;
+    this._themePreferenceVersion = 0;
+    this._themeSaveQueue = Promise.resolve();
+    this._themePreferenceFeedback?.dismiss?.();
+    this._themePreferenceFeedback = null;
+    this._themePointerOrigin = null;
     this.state.pushNotifications = { supported: null, configured: false, subscribed: false, permission: 'default', busy: false };
     this.state.editor = null;
     this.state.search = '';

@@ -33,7 +33,7 @@ test('las miniaturas pendientes se firman mediante el endpoint autenticado y se 
   assert.match(events, /this\.repository\.signLetterThumbnail\(payload\)/);
   assert.match(events, /url\.origin !== expectedOrigin/);
   assert.match(events, /url\.pathname\.startsWith\('\/storage\/v1\/render\/image\/sign\/private-media\/'\)/);
-  assert.match(events, /rootMargin: '480px 0px'/);
+  assert.match(events, /rootMargin: '120px 0px'/);
   assert.match(events, /this\.letterStampPreviewQueue\.splice\(0, 4\)/);
   assert.match(repository, /signLetterThumbnail\(data\) \{ return this\.api\.letters\('media:sign-letter-thumbnail', data\); \}/);
   assert.match(api, /case 'media:sign-letter-thumbnail':/);

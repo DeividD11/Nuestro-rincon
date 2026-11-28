@@ -68,7 +68,7 @@ test('Storage de medios es privado y el servidor firma subida y lectura sin expo
   assert.match(api, /case 'media:prepare-upload'/);
   assert.match(api, /case 'media:sign-letter-image'/);
   assert.doesNotMatch(config, /SERVICE_ROLE|SECRET_KEYS|service_role/i);
-  assert.match(html, /img-src 'self' data: https:\/\/tiqbmuubpbmxqvtkcdhq\.supabase\.co/);
+  assert.match(html, /img-src 'self' data: blob: https:\/\/tiqbmuubpbmxqvtkcdhq\.supabase\.co/);
 });
 
 test('el avatar se selecciona desde el dispositivo y el backend lo limita al propietario', async () => {

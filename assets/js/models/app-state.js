@@ -3,6 +3,7 @@ export class AppState {
     this.user = null;
     this.profile = { avatarUrl: null, avatarPath: null };
     this.localDraftPreview = null;
+    this.localReplyDrafts = [];
     this.route = 'home';
     this.dashboard = { received: 0, unread: 0, sent: 0, drafts: 0, recent: [] };
     this.letters = [];
@@ -21,5 +22,6 @@ export class AppState {
     this.routeLoading = false;
     this.routeError = null;
     this.routeNotice = null;
+    this.trashBulkActionPending = false;
   }
 }

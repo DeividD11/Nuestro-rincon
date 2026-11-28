@@ -82,8 +82,13 @@ export class AppEventCoordinatorController {
       }
     }, true);
     this.hydrateLetterStampPreviews();
+    this.observeLetterBodyImages();
+    this.root.addEventListener('pointerdown', event => {
+      if (!event.target?.closest?.('#settings-theme')) return;
+      this._themePointerOrigin = { x: event.clientX, y: event.clientY, at: Date.now() };
+    }, true);
     this.root.addEventListener('change', event => {
-      if (event.target?.id === 'settings-theme') this.applyTheme(event.target.value);
+      if (event.target?.id === 'settings-theme') this.changeThemePreference(event.target.value, event).catch(() => {});
       if (event.target?.id === 'recovery-vault-code-select') {
         const input = this.root.querySelector('#recovery-code');
         if (input) input.value = event.target.value;
@@ -92,11 +97,13 @@ export class AppEventCoordinatorController {
         const files = [...(event.target.files || [])];
         event.target.value = '';
         files.slice(0, 6).reduce((chain, file) => chain.then(() => this.addLetterImage(file)), Promise.resolve())
-          .catch(error => showToast(error.message || 'No se pudo adjuntar la imagen.', 'error'));
+          .catch(error => { if (!error?.actionFeedbackShown) showToast(error.message || 'No se pudo adjuntar la imagen.', 'error'); });
       }
       if (event.target?.id === 'profile-avatar-input' && event.target.files?.[0]) {
         const file = event.target.files[0]; event.target.value = '';
-        this.uploadProfileAvatar(file).catch(error => showToast(error.message || 'No se pudo actualizar el avatar.', 'error'));
+        this.uploadProfileAvatar(file).catch(error => {
+          if (!error?.actionFeedbackShown) showToast(error.message || 'No se pudo actualizar el avatar.', 'error');
+        });
       }
     });
     document.addEventListener('keydown', event => {
@@ -121,7 +128,7 @@ export class AppEventCoordinatorController {
       if (target) this.prefetchRoute(target.dataset.route);
     });
     this.systemThemeMedia?.addEventListener?.('change', () => {
-      if (this.state.settings.theme === 'system') this.applyTheme('system');
+      if (this.state.settings.theme === 'system') this.applyTheme('system', { cache: !this._themePreferenceDirty });
     });
     window.addEventListener('hashchange', () => {
       if (readPendingRecovery()) return;
@@ -159,7 +166,6 @@ export class AppEventCoordinatorController {
     const narrow = window.matchMedia?.('(max-width: 1024px)')?.matches ?? window.innerWidth <= 1024;
     const sidebar = this.root.querySelector('.sidebar');
     const main = this.root.querySelector('#main-content');
-    const skipLink = this.root.querySelector('.skip-link');
     const trigger = this.root.querySelector('.mobile-menu');
     const closeButton = this.root.querySelector('.mobile-nav-close');
     const hideSidebar = Boolean(narrow && !this.state.mobileNavOpen);
@@ -190,7 +196,6 @@ export class AppEventCoordinatorController {
       if (narrow) main.setAttribute('aria-hidden', String(hideMain));
       else main.removeAttribute('aria-hidden');
     }
-    if (skipLink) skipLink.toggleAttribute('inert', hideMain);
     if (trigger) trigger.setAttribute('aria-expanded', String(Boolean(narrow && this.state.mobileNavOpen)));
   }
 
@@ -233,7 +238,7 @@ export class AppEventCoordinatorController {
   }
 
   async hydrateLetterStampPreviews() {
-    const stamps = [...(this.root?.querySelectorAll?.('.letter-stamp.is-pending-source[data-letter-id][data-image-path]') || [])];
+    const stamps = [...(this.root?.querySelectorAll?.('.letter-stamp[data-letter-id][data-image-path]') || [])];
     if (!stamps.length || typeof this.repository?.signLetterImage !== 'function') return;
     this.letterStampPreviewCache ||= new Map();
     const pattern = /^letters\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f-]{36})\.(?:jpg|jpeg|png|webp)$/i;
@@ -241,12 +246,28 @@ export class AppEventCoordinatorController {
 
     const hydrateOne = async stamp => {
       if (!stamp.isConnected || stamp.dataset.previewRequested === 'true') return;
+      if (stamp.querySelector('img') && !stamp.dataset.suspendedSrc) return;
+      const suspendedSource = String(stamp.dataset.suspendedSrc || '');
+      if (suspendedSource) {
+        const restored = document.createElement('img');
+        restored.alt = ''; restored.width = 96; restored.height = 96;
+        restored.loading = 'eager'; restored.decoding = 'async'; restored.fetchPriority = 'low';
+        restored.referrerPolicy = 'no-referrer';
+        stamp.append(restored);
+        stamp.classList.add('has-image', 'is-loading');
+        stamp.classList.remove('is-pending-source');
+        stamp.dataset.previewRequested = 'true';
+        delete stamp.dataset.suspendedSrc;
+        restored.src = suspendedSource;
+        return;
+      }
       const letterId = String(stamp.dataset.letterId || '');
       const path = String(stamp.dataset.imagePath || '');
       const match = path.match(pattern);
       const allowedBaseIds = [letterId, String(stamp.dataset.replyToLetterId || '')].filter(Boolean);
       if (!match || !allowedBaseIds.includes(match[1]) || !/^[0-9a-f-]{36}$/i.test(letterId)) {
         stamp.classList.remove('has-image', 'is-loading', 'is-pending-source');
+        stamp.querySelector('img')?.remove();
         return;
       }
       stamp.dataset.previewRequested = 'true';
@@ -259,7 +280,10 @@ export class AppEventCoordinatorController {
           let result;
           if (typeof this.repository.signLetterThumbnail === 'function') {
             try { result = await this.repository.signLetterThumbnail(payload); }
-            catch { result = await this.repository.signLetterImage(payload); }
+            catch {
+              try { result = await this.repository.signLetterThumbnail({ ...payload, optimized: false }); }
+              catch { result = await this.repository.signLetterImage(payload); }
+            }
           } else result = await this.repository.signLetterImage(payload);
           const source = String(result?.signedUrl || '');
           const url = new URL(source);
@@ -274,8 +298,8 @@ export class AppEventCoordinatorController {
       const source = await entry.promise;
       if (!stamp.isConnected) return;
       if (!source) {
-        stamp.classList.remove('has-image', 'is-loading', 'is-pending-source');
-        stamp.replaceChildren();
+        stamp.dataset.previewRequested = 'false';
+        stamp.classList.add('is-pending-source', 'is-loading');
         return;
       }
       const image = document.createElement('img');
@@ -290,23 +314,44 @@ export class AppEventCoordinatorController {
       image.src = source;
     };
 
-    // No firmar las imágenes de todas las tarjetas al abrir un buzón. La firma
-    // se solicita cuando el sello está a punto de entrar en pantalla.
-    this.letterStampPreviewObserver?.disconnect?.();
+    // Los sellos se observan durante toda su vida: al salir del viewport se
+    // libera el bitmap y al volver a entrar se restaura la URL privada.
     if (typeof IntersectionObserver === 'function') {
-      this.letterStampPreviewObserver = new IntersectionObserver(entries => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          this.letterStampPreviewObserver?.unobserve(entry.target);
-          const stamp = entry.target;
-          if (stamp.dataset.previewQueued === 'true' || stamp.dataset.previewRequested === 'true') continue;
-          stamp.dataset.previewQueued = 'true';
-          this.letterStampPreviewQueue ||= [];
-          this.letterStampPreviewQueue.push({ stamp, hydrate: hydrateOne });
-        }
-        this.drainLetterStampPreviewQueue();
-      }, { root: null, rootMargin: '480px 0px', threshold: 0.01 });
-      for (const stamp of stamps) this.letterStampPreviewObserver.observe(stamp);
+      if (!this.letterStampPreviewObserver) {
+        this.letterStampPreviewObserver = new IntersectionObserver(entries => {
+          for (const entry of entries) {
+            const stamp = entry.target;
+            if (entry.isIntersecting) {
+              stamp.dataset.previewVisible = 'true';
+              if (stamp.dataset.previewQueued === 'true' || stamp.dataset.previewRequested === 'true') continue;
+              stamp.dataset.previewQueued = 'true';
+              this.letterStampPreviewQueue ||= [];
+              this.letterStampPreviewQueue.push({ stamp, hydrate: hydrateOne });
+              continue;
+            }
+            if (stamp.dataset.previewVisible !== 'true') continue;
+            const image = stamp.querySelector('img');
+            if (image) {
+              const source = image.currentSrc || image.src || '';
+              if (source) stamp.dataset.suspendedSrc = source;
+              image.remove();
+            }
+            stamp.dataset.previewRequested = 'false';
+            stamp.dataset.previewQueued = 'false';
+            stamp.classList.add('has-image', 'is-loading', 'is-pending-source');
+          }
+          this.drainLetterStampPreviewQueue();
+        }, { root: null, rootMargin: '120px 0px', threshold: 0.01 });
+      }
+      for (const stamp of stamps) {
+        if (stamp.dataset.previewObserved === 'true') continue;
+        stamp.dataset.previewObserved = 'true';
+        this.letterStampPreviewObserver.observe(stamp);
+      }
+      if (!this.letterStampMutationObserver && this.root && typeof MutationObserver === 'function') {
+        this.letterStampMutationObserver = new MutationObserver(() => queueMicrotask(() => this.hydrateLetterStampPreviews()));
+        this.letterStampMutationObserver.observe(this.root, { childList: true, subtree: true });
+      }
       return;
     }
 
@@ -319,6 +364,54 @@ export class AppEventCoordinatorController {
       this.letterStampPreviewQueue.push({ stamp, hydrate: hydrateOne });
     }
     this.drainLetterStampPreviewQueue();
+  }
+
+  observeLetterBodyImages() {
+    if (!this.root || typeof IntersectionObserver !== 'function') return;
+    if (!this.letterBodyImageObserver) {
+      this.letterBodyImageObserver = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          const image = entry.target;
+          const frame = image.closest('.letter-image-frame');
+          if (!frame) continue;
+          if (entry.isIntersecting) {
+            image.dataset.inViewport = 'true';
+            const suspended = image.dataset.suspendedSrc;
+            if (suspended) {
+              frame.classList.add('is-loading');
+              frame.classList.remove('is-error');
+              const label = frame.querySelector('.letter-image-placeholder-label');
+              if (label) label.textContent = 'Cargando imagen…';
+              image.loading = 'eager';
+              image.src = suspended;
+              delete image.dataset.suspendedSrc;
+            }
+          } else if (image.dataset.inViewport === 'true' && image.complete && image.naturalWidth > 0) {
+            const source = image.currentSrc || image.src || '';
+            if (source) {
+              image.dataset.suspendedSrc = source;
+              image.removeAttribute('src');
+              frame.classList.add('is-loading');
+              frame.classList.remove('is-error');
+              const label = frame.querySelector('.letter-image-placeholder-label');
+              if (label) label.textContent = 'Cargando imagen…';
+            }
+          }
+        }
+      }, { root: null, rootMargin: '80px 0px', threshold: 0.01 });
+    }
+    const observeNewImages = () => {
+      for (const image of this.root.querySelectorAll('.letter-image-frame img[data-image-path]')) {
+        if (image.dataset.viewportObserved === 'true') continue;
+        image.dataset.viewportObserved = 'true';
+        this.letterBodyImageObserver.observe(image);
+      }
+    };
+    observeNewImages();
+    if (!this.letterBodyImageMutationObserver) {
+      this.letterBodyImageMutationObserver = new MutationObserver(() => observeNewImages());
+      this.letterBodyImageMutationObserver.observe(this.root, { childList: true, subtree: true });
+    }
   }
 
   async drainLetterStampPreviewQueue() {

@@ -62,7 +62,7 @@ test('el sello utiliza firstImageUrl y conserva el fallback mientras carga la pr
   assert.match(view, /firstImageUrl/);
   assert.match(edge, /const items = decorated;/);
   assert.doesNotMatch(edge, /withFirstImagePreviews/);
-  assert.match(events, /rootMargin: '480px 0px'/);
+  assert.match(events, /rootMargin: '120px 0px'/);
 });
 
 test('una carta que recibe la URL privada de su primera imagen usa esa miniatura en letter-stamp', async () => {

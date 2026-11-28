@@ -231,25 +231,14 @@ export function showConfirmDialog({
 }
 
 const TOAST_META = Object.freeze({
+  loading: { title: 'Procesando', icon: '' },
   success: { title: 'Listo', icon: '✓' },
   error: { title: 'No se pudo completar', icon: '!' },
   info: { title: 'Aviso', icon: 'i' }
 });
 
-/** Presenta avisos breves, descartables y compatibles con lectores de pantalla. */
-export function showToast(message, type = 'info', options = {}) {
-  const safeType = Object.hasOwn(TOAST_META, type) ? type : 'info';
-  const duration = Math.max(1800, Math.min(Number(options.duration) || 4600, 10000));
-  let region = document.querySelector('.toast-region');
-  if (!region) {
-    region = document.createElement('div');
-    region.className = 'toast-region';
-    region.setAttribute('role', 'region');
-    region.setAttribute('aria-label', 'Avisos de la aplicación');
-    document.body.append(region);
-  }
-
-  const meta = TOAST_META[safeType];
+function announceToast(message, safeType) {
+  const meta = TOAST_META[safeType] || TOAST_META.info;
   const announcement = `${meta.title}. ${String(message ?? '')}`.trim();
   const announcerId = safeType === 'error' ? 'app-alert-announcer' : 'app-announcer';
   let announcer = document.getElementById(announcerId);
@@ -262,31 +251,37 @@ export function showToast(message, type = 'info', options = {}) {
     announcer.setAttribute('aria-atomic', 'true');
     document.body.append(announcer);
   }
-  // Vaciar y reinsertar permite anunciar también dos avisos consecutivos iguales.
   if (announcer._announceTimer) window.clearTimeout(announcer._announceTimer);
   announcer.textContent = '';
   announcer._announceTimer = window.setTimeout(() => {
     announcer.textContent = announcement;
     announcer._announceTimer = null;
-  }, 35);
+  }, 25);
+}
+
+/** Presenta avisos breves, descartables y compatibles con lectores de pantalla. */
+export function showToast(message, type = 'info', options = {}) {
+  const safeType = Object.hasOwn(TOAST_META, type) ? type : 'info';
+  let region = document.querySelector('.toast-region');
+  if (!region) {
+    region = document.createElement('div');
+    region.className = 'toast-region';
+    region.setAttribute('role', 'region');
+    region.setAttribute('aria-label', 'Avisos de la aplicación');
+    document.body.append(region);
+  }
 
   const toast = document.createElement('article');
   toast.className = `toast app-toast toast-${safeType}`;
   toast.setAttribute('role', 'group');
-  toast.setAttribute('aria-label', announcement);
-
   const iconNode = document.createElement('span');
   iconNode.className = 'toast-icon';
   iconNode.setAttribute('aria-hidden', 'true');
-  iconNode.textContent = meta.icon;
   const content = document.createElement('div');
   content.className = 'toast-content';
   const titleNode = document.createElement('strong');
-  titleNode.textContent = meta.title;
   const messageNode = document.createElement('p');
-  messageNode.textContent = String(message ?? '');
   content.append(titleNode, messageNode);
-
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'toast-close';
@@ -295,15 +290,83 @@ export function showToast(message, type = 'info', options = {}) {
   toast.append(iconNode, content, closeButton);
   region.append(toast);
 
-  let timer = window.setTimeout(() => toast.remove(), duration);
+  let timer = null;
+  let dismissed = false;
   const dismiss = () => {
-    window.clearTimeout(timer);
+    if (dismissed) return;
+    dismissed = true;
+    if (timer !== null) window.clearTimeout(timer);
+    timer = null;
     toast.remove();
   };
+  const update = (nextMessage, nextType = 'info', nextOptions = {}) => {
+    if (dismissed) return toast;
+    const nextSafeType = Object.hasOwn(TOAST_META, nextType) ? nextType : 'info';
+    const meta = TOAST_META[nextSafeType];
+    const announcement = `${meta.title}. ${String(nextMessage ?? '')}`.trim();
+    toast.className = `toast app-toast toast-${nextSafeType}`;
+    toast.dataset.toastState = nextSafeType;
+    toast.setAttribute('aria-label', announcement);
+    titleNode.textContent = meta.title;
+    messageNode.textContent = String(nextMessage ?? '');
+    iconNode.textContent = meta.icon;
+    announceToast(nextMessage, nextSafeType);
+    if (timer !== null) window.clearTimeout(timer);
+    timer = null;
+    if (nextSafeType !== 'loading' && nextOptions.persistent !== true) {
+      const duration = Math.max(1800, Math.min(Number(nextOptions.duration) || 4600, 10000));
+      timer = window.setTimeout(dismiss, duration);
+    }
+    return toast;
+  };
+  toast.update = update;
+  toast.dismiss = dismiss;
   closeButton.addEventListener('click', dismiss, { once: true });
-  toast.addEventListener('mouseenter', () => window.clearTimeout(timer), { once: true });
+  toast.addEventListener('mouseenter', () => {
+    if (timer !== null) window.clearTimeout(timer);
+    timer = null;
+  }, { once: true });
   toast.addEventListener('mouseleave', () => {
-    if (toast.isConnected) timer = window.setTimeout(dismiss, 1200);
+    if (toast.isConnected && !dismissed && toast.dataset.toastState !== 'loading') {
+      timer = window.setTimeout(dismiss, 1200);
+    }
   });
+  update(message, safeType, options);
   return toast;
+}
+
+/** Crea un único aviso de proceso que se transforma en éxito o error al terminar la acción. */
+export function beginActionToast(message, options = {}) {
+  const toast = showToast(message, 'loading', { ...options, persistent: true });
+  let settled = false;
+  return {
+    toast,
+    update(nextMessage) {
+      if (!settled) toast.update(nextMessage, 'loading', { persistent: true });
+      return this;
+    },
+    success(nextMessage, nextOptions = {}) {
+      if (settled) return this;
+      settled = true;
+      toast.update(nextMessage, 'success', nextOptions);
+      return this;
+    },
+    error(nextMessage, nextOptions = {}) {
+      if (settled) return this;
+      settled = true;
+      toast.update(nextMessage, 'error', nextOptions);
+      return this;
+    },
+    info(nextMessage, nextOptions = {}) {
+      if (settled) return this;
+      settled = true;
+      toast.update(nextMessage, 'info', nextOptions);
+      return this;
+    },
+    dismiss() {
+      settled = true;
+      toast.dismiss();
+      return this;
+    }
+  };
 }

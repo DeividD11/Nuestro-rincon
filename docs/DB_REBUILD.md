@@ -1,4 +1,18 @@
+## Actualización local v49 — retirada y purga del contenido propio
+
+La entrega v49 incorpora `20261128030000_withdraw_sent_letters_and_owner_purge.sql`, el archivo SQL local número 31. La migración reemplaza `guard_letter_participants_and_immutability`, `confirm_letter_permanent_deletion` y `send_letter_draft`, e incorpora `withdraw_sent_letter_to_draft`. Debe revisarse y aplicarse de forma individual antes de desplegar `letters-api`. No la combines con las propuestas históricas ni ejecutes `supabase db push` sobre producción.
+
 # Reconstrucción de Supabase desde cero
+
+## Release v49 — retirada/purga del autor y sincronización de `letters-api`
+
+El inventario local de v49 contiene 31 archivos SQL. La migración local `20261128030000_withdraw_sent_letters_and_owner_purge.sql` ya fue aplicada al proyecto `tiqbmuubpbmxqvtkcdhq` y Supabase la registró como `20261128031503_withdraw_sent_letters_and_owner_purge`. No vuelvas a ejecutar el archivo local ni uses `supabase db push` para sincronizar todo el directorio: nueve propuestas locales diferentes siguen pendientes de reconciliación. `letters-api` v13 ACTIVE ya incluye `letter:edit`, la firma de miniaturas y la autorización de medios para el remitente que edita su propio mensaje enviado. `auth-api` permanece en v11. También existe el archivo local `20261125010000_private_media_cleanup_queue.sql`, sin timestamp equivalente en el ledger; la tabla, las dos RPC de cola y los triggers correspondientes fueron verificados ya presentes en remoto. No apliques esa migración de nuevo sin reconciliar primero sus definiciones.
+
+La edición versionada de contenido enviado fue aplicada previamente mediante `20261127090000_edit_sent_letter_content.sql`; guarda el contenido anterior en `letter_versions`, valida propietario/estado/revisión y limita la RPC a `service_role`. La migración v49 añade la retirada de una creación enviada a Borradores del autor y la purga del creador sin autorización de la otra cuenta, manteniendo el flujo de confirmación del destinatario.
+
+## Actualización local v46 — corrección de hallazgos de auditoría
+
+La entrega v46 incorpora la migración aditiva `20261125010000_private_media_cleanup_queue.sql` para poner en cola los objetos de imagen privados al purgar/reemplazar cuerpos y snapshots. Es la migración local número 29 y todavía no está aplicada en producción. Debe probarse primero en un proyecto aislado con `npm run test:db`; no ejecutes `supabase db push` ni reapliques las ocho propuestas históricas. También se incorpora un backup v2 que incluye los bytes de `private-media`, manifiesto SHA-256 y restauración aislada de Storage. Las ocho propuestas históricas del inventario v35 siguen pendientes de reconciliación; no se consideran parte de esta migración única.
 
 ## Actualización local v36 — medios y miniaturas (24 de noviembre de 2026)
 

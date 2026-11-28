@@ -163,3 +163,21 @@ html[data-theme="dark"] .nr-dialog-backdrop[data-tone="warning"] .nr-dialog-icon
 @media (prefers-reduced-motion: reduce) {
   .nr-dialog-backdrop, .nr-dialog, .app-toast { animation: none !important; }
 }
+
+/* Aviso transaccional: aparece al iniciar la acción y se actualiza al recibir su resultado. */
+.toast-loading .toast-icon { position: relative; color: transparent; }
+.toast-loading .toast-icon::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 50%;
+  top: 50%;
+  margin: -8px 0 0 -8px;
+  border: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-top-color: var(--accent-2, var(--accent));
+  border-radius: 50%;
+  animation: toast-action-spin .72s linear infinite;
+}
+@keyframes toast-action-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .toast-loading .toast-icon::before { animation: none; opacity: .65; } }

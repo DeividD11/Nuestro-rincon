@@ -16,6 +16,7 @@
     "package:zip": "node scripts/package-zip.mjs",
     "backup:db": "bash scripts/backup/create-backup.sh",
     "restore:isolated": "bash scripts/backup/restore-to-isolated.sh",
+    "restore:storage": "bash scripts/backup/restore-storage-only.sh",
     "check:contrast": "node tools/contrast-audit.mjs",
     "test:a11y": "playwright test tests/e2e/accessibility.spec.mjs",
     "supabase:reconcile:readonly": "bash scripts/release/reconcile-readonly.sh",

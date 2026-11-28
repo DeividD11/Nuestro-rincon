@@ -39,7 +39,7 @@ La auditoría de paleta no cubre todos los colores declarados directamente en co
 - `#app-announcer` es una región `status` (`aria-live="polite"`) para confirmaciones e información.
 - `#app-alert-announcer` es una región `alert` (`aria-live="assertive"`) para errores que requieren atención.
 - Los avisos visuales no agregan regiones vivas redundantes.
-- Las vistas autenticadas ofrecen enlace para saltar al contenido, navegación principal nombrada, ruta activa y encabezado enfocable.
+- Las vistas autenticadas ofrecen navegación principal nombrada, ruta activa y encabezado enfocable. El enlace «Saltar al contenido principal» se eliminó de toda la interfaz.
 - El menú móvil cerrado usa `inert` y `aria-hidden`; al abrirlo, el foco pasa al control de cierre. Al cerrar, se restaura al botón que abrió el menú.
 - Los diálogos de confirmación y vista previa usan `dialog` o `alertdialog`, tienen nombre y descripción accesibles, limitan Tab, responden a Escape, inactivan la aplicación de fondo y devuelven el foco al disparador.
 - Los controles del editor tienen nombres accesibles y son alcanzables mediante teclado.
@@ -98,3 +98,21 @@ npm run test:e2e
 ```
 
 Al completar una prueba manual, registra fecha, versión de la aplicación, sistema operativo, navegador, lector de pantalla y su versión, recorrido exacto, resultado y defectos observados. No cambies el estado a `Validado` sin conservar esa evidencia.
+
+
+## Cambios de tema y avisos de acción
+
+El selector de tema solo muestra una vista previa. El valor llega a `user_settings` cuando se envía «Guardar preferencias»; navegar fuera de Configuración sin guardar revierte el último tema confirmado. La transición visual utiliza la API View Transitions con una máscara circular cuyo origen se captura desde `pointerdown` en el selector; cuando la API no existe o el usuario reduce el movimiento, el cambio se aplica sin una animación intrusiva.
+
+Las acciones de avatar y preferencias mantienen un aviso transaccional: empieza como estado de proceso y se actualiza al resultado confirmado. En el avatar, la vista previa local aparece junto con el aviso de subida; el mensaje de éxito no se anuncia hasta que el servidor guarda la ruta y la imagen remota se decodifica, o se informa explícitamente que se mantiene la vista previa local si la URL firmada no está disponible.
+
+## Cambio de tema y avisos transaccionales v47
+
+La transición de tema utiliza `::view-transition-new(root)` con un `clip-path: circle()` centrado en las coordenadas del puntero (o en el centro del control si se usa teclado). `prefers-reduced-motion: reduce` desactiva la revelación y aplica el tema sin movimiento. Si View Transitions no está disponible, la actualización sigue siendo inmediata.
+
+Los avisos de acciones tienen un único nodo accesible: anuncian el estado de proceso al empezar y ese mismo aviso se transforma en el resultado definitivo. El estado de éxito solo se comunica después de la confirmación correspondiente; los fallos y resultados pendientes no se anuncian como éxito.
+
+
+## Accesibilidad y preferencias v48
+
+Se retiró el enlace «Saltar al contenido principal» por solicitud de producto. Se conservan el foco programático del encabezado de página, la navegación principal nombrada, el indicador `aria-current` y la gestión de foco del menú móvil. El selector de tema es una vista previa: el cambio solo queda persistido al enviar el formulario de preferencias; al abandonar Configuración antes de guardar, se restablece la última preferencia confirmada.

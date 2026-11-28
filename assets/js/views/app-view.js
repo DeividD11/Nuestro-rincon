@@ -31,7 +31,7 @@ export class AppView {
 
   renderBoot() { return renderBoot(this); }
 
-  renderLogin(error = '') { return renderLogin(this, error); }
+  renderLogin(error = '', notice = '') { return renderLogin(this, error, notice); }
 
   renderRegister(error = '', pending = null) { return renderRegister(this, error, pending); }
 
@@ -54,7 +54,6 @@ export class AppView {
         ? `<span class="avatar has-image is-loading" aria-hidden="true"><span class="avatar-image-placeholder" aria-hidden="true">${avatarInitials}</span><img src="${escapeHtml(avatarUrl)}" alt="" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer"></span>`
         : `<span class="avatar" aria-hidden="true">${avatarInitials}</span>`;
     this.root.innerHTML = `
-      <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
       <div class="mobile-scrim ${state.mobileNavOpen ? 'show' : ''}" data-action="close-mobile-nav" aria-hidden="true"></div>
       <div class="app-shell">
         <aside class="sidebar ${state.mobileNavOpen ? 'open' : ''}" aria-label="Menú de navegación">

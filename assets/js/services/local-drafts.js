@@ -14,17 +14,33 @@ function openDatabase() {
 }
 
 export async function putLocalDraft(draft) {
+  const db = await openDatabase();
   try {
-    const db = await openDatabase();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put({ ...draft, savedAt: draft.savedAt || new Date().toISOString() });
       tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error || new Error('Falló la transacción del borrador.'));
+      tx.onabort = () => reject(tx.error || new Error('Se canceló la transacción del borrador.'));
     });
+  } finally {
     db.close();
-  } catch (error) {
-    console.warn('No se pudo guardar la copia local del borrador.', error);
+  }
+}
+
+export async function deleteLocalDraftStrict(key) {
+  if (!key) return;
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).delete(key);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error || new Error('No se pudo eliminar la copia local del borrador.'));
+      tx.onabort = () => reject(tx.error || new Error('Se canceló la eliminación de la copia local.'));
+    });
+  } finally {
+    db.close();
   }
 }
 
@@ -56,21 +72,28 @@ export async function deleteLocalDraft(key) {
 }
 
 
-export async function getLocalDraftsForUser(userId) {
+export async function getLocalDraftsForUserStrict(userId) {
   if (!userId) return [];
+  const db = await openDatabase();
   try {
-    const db = await openDatabase();
     const values = await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readonly');
       const request = tx.objectStore(STORE).getAll();
       request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
+      request.onerror = () => reject(request.error || new Error('No se pudieron leer los borradores locales.'));
+      tx.onabort = () => reject(tx.error || new Error('Se canceló la lectura de los borradores locales.'));
     });
-    db.close();
     const prefix = `${userId}:`;
     return values.filter(item => typeof item?.key === 'string' && item.key.startsWith(prefix))
       .sort((a, b) => new Date(a.savedAt || 0).getTime() - new Date(b.savedAt || 0).getTime());
-  } catch { return []; }
+  } finally {
+    db.close();
+  }
+}
+
+export async function getLocalDraftsForUser(userId) {
+  try { return await getLocalDraftsForUserStrict(userId); }
+  catch { return []; }
 }
 
 export async function deleteLocalDraftsForUser(userId) {

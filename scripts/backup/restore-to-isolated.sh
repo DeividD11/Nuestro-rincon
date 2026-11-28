@@ -57,26 +57,59 @@ chmod 600 "$identity_file"
 archive="$work_dir/backup.tar.gz"
 age -d -i "$identity_file" -o "$archive" "$NR_RESTORE_ENCRYPTED_FILE"
 
-mapfile -t archive_members < <(tar -tzf "$archive" | LC_ALL=C sort)
-expected_members=($'data.sql' $'manifest.json' $'roles.sql' $'schema.sql')
-if [[ "${archive_members[*]}" != "${expected_members[*]}" ]]; then
-  echo 'El TAR no contiene exactamente los cuatro archivos esperados; se rechaza.' >&2
+# Rechaza rutas absolutas, traversal y tipos de entrada que puedan escribir fuera del directorio.
+archive_members="$(tar -tzf "$archive")"
+while IFS= read -r member; do
+  clean_member="${member%/}"
+  if [[ -z "$clean_member" || "$clean_member" == *\\* ]]; then
+    echo 'El TAR contiene una ruta insegura; se rechaza.' >&2
+    exit 3
+  fi
+  case "$clean_member" in
+    data.sql|manifest.json|roles.sql|schema.sql|storage-manifest.json|storage|storage/objects|storage/objects/*) ;;
+    *) echo "El TAR contiene una ruta inesperada: $clean_member" >&2; exit 3 ;;
+  esac
+done <<< "$archive_members"
+if ! tar -tvzf "$archive" | awk 'substr($1,1,1) !~ /^[-d]$/ { bad=1 } END { exit bad ? 1 : 0 }'; then
+  echo 'El TAR contiene enlaces u objetos no regulares; se rechaza.' >&2
   exit 3
 fi
-tar -xzf "$archive" -C "$work_dir"
 
-manifest_json="$(node --input-type=module - "$work_dir/manifest.json" <<'NODE'
+tar -xzf "$archive" -C "$work_dir" --no-same-owner --no-same-permissions
+
+manifest_json="$(node --input-type=module - "$work_dir/manifest.json" "$archive" <<'NODE'
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const requiredComponents = ['roles.sql','schema.sql','data.sql'];
+const archive = process.argv[3];
+const baseFiles = ['data.sql','manifest.json','roles.sql','schema.sql'];
+const v1Components = ['roles.sql','schema.sql','data.sql'];
+const v2Components = ['roles.sql','schema.sql','data.sql','storage-manifest.json'];
 if (manifest?.format !== 'nuestro-rincon-logical-backup'
-  || manifest?.formatVersion !== 1
-  || manifest?.scope !== 'public'
+  || ![1,2].includes(manifest?.formatVersion)
   || manifest?.encryption !== 'age'
   || !/^[a-z0-9]{20}$/.test(manifest?.projectRef || '')
-  || !Number.isFinite(Date.parse(manifest?.createdAt || ''))
-  || JSON.stringify(manifest?.components) !== JSON.stringify(requiredComponents)) {
+  || !Number.isFinite(Date.parse(manifest?.createdAt || ''))) {
   throw new Error('El manifiesto del respaldo no es compatible o está incompleto.');
+}
+if (manifest.formatVersion === 1) {
+  if (manifest.scope !== 'public' || JSON.stringify(manifest.components) !== JSON.stringify(v1Components)
+    || process.env.NR_RESTORE_ALLOW_DB_ONLY_BACKUP !== 'YES') {
+    throw new Error('El respaldo v1 no contiene bytes de Storage. Define NR_RESTORE_ALLOW_DB_ONLY_BACKUP=YES solo para aceptar expresamente una restauración incompleta.');
+  }
+} else {
+  if (manifest.scope !== 'public+private-media' || JSON.stringify(manifest.components) !== JSON.stringify(v2Components)
+    || !manifest.storage || manifest.storage.bucket !== 'private-media'
+    || !Number.isSafeInteger(manifest.storage.objectCount) || manifest.storage.objectCount < 0
+    || !Number.isSafeInteger(manifest.storage.totalBytes) || manifest.storage.totalBytes < 0) {
+    throw new Error('El manifiesto v2 no incluye un inventario válido del bucket privado.');
+  }
+  if (!fs.existsSync(`${process.argv[2].replace(/manifest.json$/, '')}storage-manifest.json`)) {
+    throw new Error('Falta storage-manifest.json en el respaldo v2.');
+  }
+  if (!process.env.NR_RESTORE_STORAGE_SERVICE_KEY) {
+    throw new Error('Falta NR_RESTORE_STORAGE_SERVICE_KEY para recuperar los objetos privados de Storage.');
+  }
 }
 if (manifest.migrationHistory !== undefined) {
   if (!Array.isArray(manifest.migrationHistory) || manifest.migrationHistory.some(item =>
@@ -87,7 +120,33 @@ const counts = manifest.rowCounts;
 for (const key of ['app_users','letters','letter_threads','user_sessions','user_recovery_codes','notifications']) {
   if (!Number.isSafeInteger(counts?.[key]) || counts[key] < 0) throw new Error(`El manifiesto no contiene un recuento válido para ${key}.`);
 }
-process.stdout.write(JSON.stringify({projectRef:manifest.projectRef,rowCounts:counts,migrationHistoryCount:manifest.migrationHistory?.length ?? null}));
+const actual = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean).filter(name => !name.endsWith('/')).sort();
+let expected = [...baseFiles];
+if (manifest.formatVersion === 2) {
+  const storage = JSON.parse(fs.readFileSync(`${process.argv[2].replace(/manifest.json$/, '')}storage-manifest.json`, 'utf8'));
+  if (storage?.format !== 'nuestro-rincon-storage-backup' || storage.formatVersion !== 1
+    || storage.projectRef !== manifest.projectRef || storage.bucket !== 'private-media'
+    || storage.objectCount !== manifest.storage.objectCount || storage.totalBytes !== manifest.storage.totalBytes
+    || !Array.isArray(storage.objects) || storage.objects.length !== storage.objectCount) {
+    throw new Error('Los manifiestos de base de datos y Storage no coinciden.');
+  }
+  const seen = new Set();
+  const objectFiles = storage.objects.map(item => {
+    if (typeof item?.path !== 'string' || item.path.startsWith('/') || item.path.includes('\\')
+      || item.path.split('/').some(segment => !segment || segment === '.' || segment === '..')
+      || !/^(?:[0-9a-f-]{36}\/avatars\/[0-9a-f-]{36}|letters\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36})\.(?:jpg|jpeg|png|webp)$/i.test(item.path)
+      || seen.has(item.path)) throw new Error('Ruta de objeto no válida en storage-manifest.json.');
+    seen.add(item.path);
+    if (!Number.isSafeInteger(item.size) || item.size < 1 || item.size > 5 * 1024 * 1024
+      || !/^[a-f0-9]{64}$/i.test(item.sha256 || '')
+      || !['image/jpeg','image/png','image/webp'].includes(item.contentType)) throw new Error('Metadatos de Storage inválidos.');
+    return `storage/objects/${item.path}`;
+  });
+  expected.push('storage-manifest.json', ...objectFiles);
+}
+expected.sort();
+if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error('El TAR no coincide exactamente con los componentes declarados en sus manifiestos.');
+process.stdout.write(JSON.stringify({projectRef:manifest.projectRef,rowCounts:counts,migrationHistoryCount:manifest.migrationHistory?.length ?? null,formatVersion:manifest.formatVersion,storage:manifest.storage || null}));
 NODE
 )"
 manifest_ref="$(NR_RESTORE_MANIFEST="$manifest_json" node --input-type=module -e "const m=JSON.parse(process.env.NR_RESTORE_MANIFEST); process.stdout.write(m.projectRef)")"
@@ -144,6 +203,11 @@ for (const key of ['app_users','letters','letter_threads','user_sessions','user_
   }
 }
 NODE
+
+if [[ "$(NR_RESTORE_MANIFEST="$manifest_json" node --input-type=module -e "process.stdout.write(String(JSON.parse(process.env.NR_RESTORE_MANIFEST).formatVersion))")" == '2' ]]; then
+  printf 'Restaurando y verificando los objetos privados de Storage…\n'
+  node "$(dirname "$0")/storage-objects.mjs" restore "$work_dir"
+fi
 
 printf 'Restauración aislada verificada: checksum, manifiesto y seis recuentos coinciden.\n'
 printf 'Ejecuta además las pruebas pgTAP y de integración antes de considerar la copia recuperable.\n'

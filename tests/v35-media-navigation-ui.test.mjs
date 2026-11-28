@@ -54,8 +54,9 @@ test('guardar borrador navega automáticamente a Borradores cuando existe una co
   const block = controller.slice(controller.indexOf("case 'save-draft':"), controller.indexOf("case 'preview-send':"));
   assert.match(block, /const result = await this\.saveDraft\(false\)/);
   assert.match(block, /\['saved', 'created', 'local'\]\.includes\(result\?\.status\)/);
-  assert.match(block, /this\.openRoute\('drafts', true, \{ focus: true \}\)/);
-  assert.match(block, /if \(!isReply/);
+  assert.match(block, /this\.openRoute\('drafts', true, \{ focus: true, skipHistory: true \}\)/);
+  assert.doesNotMatch(block, /if \(!isReply/);
+  assert.match(block, /this\.openRoute\('drafts', true, \{ focus: true, skipHistory: true \}\)/);
 });
 
 test('Revisar y enviar abre el modal sin redirigir a Escribir carta', async () => {

@@ -539,3 +539,14 @@ html[data-theme="dark"] .modal-card .letter-paper { background:#fffdf8; color:#4
   .app-shell .image-tool-btn .image-tool-icon { width:18px; height:18px; }
   .app-shell .editor-toolbar-hint { display:none; }
 }
+
+/* La conversación completa del PDF es independiente de las vistas previas abreviadas de pantalla. */
+#letter-pdf-print-root{display:none}
+@media print{
+  @page{margin:16mm}
+  body>*:not(#letter-pdf-print-root){display:none!important}
+  #letter-pdf-print-root{display:block!important;position:static!important;width:100%!important;max-width:none!important;margin:0!important;padding:0!important;background:#fff!important;color:#25211f!important}
+  #letter-pdf-print-root .pdf-letter{break-inside:auto;page-break-inside:auto}
+  #letter-pdf-print-root .pdf-body,#letter-pdf-print-root .pdf-body p{color:#25211f!important}
+  #letter-pdf-print-root .pdf-body img{max-width:100%!important;height:auto!important}
+}

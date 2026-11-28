@@ -1,6 +1,6 @@
 import { readPendingRecovery } from '../services/recovery-handoff.js';
 import { AdaptivePoller } from '../services/adaptive-poller.js';
-import { showToast } from '../utils/dom.js';
+import { beginActionToast } from '../utils/dom.js';
 import { uploadPrivateMedia } from '../services/private-media-upload.js';
 
 export class SettingsController {
@@ -30,20 +30,124 @@ export class SettingsController {
       } catch { /* La preferencia remota sigue siendo la fuente persistente. */ }
     }
 
-    applyTheme(theme = 'system') {
+    applyTheme(theme = 'system', options = {}) {
       const preference = ['light','dark','system'].includes(theme) ? theme : 'system';
       const resolved = preference === 'system'
         ? (this.systemThemeMedia?.matches ? 'dark' : 'light')
         : preference;
-      this.state.settings.theme = preference;
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.dataset.themePreference = preference;
-      document.documentElement.style.colorScheme = resolved;
-      this.cacheTheme(preference);
+      const root = document.documentElement;
+      const currentResolved = root.dataset.theme || resolved;
+      const apply = () => {
+        this.state.settings.theme = preference;
+        root.dataset.theme = resolved;
+        root.dataset.themePreference = preference;
+        root.style.colorScheme = resolved;
+        const metaThemeColor = document.querySelector?.('meta[name="theme-color"]');
+        if (metaThemeColor) metaThemeColor.content = resolved === 'dark' ? '#171615' : '#f4eee5';
+        if (options.cache !== false) this.cacheTheme(preference);
+      };
+
+      if (currentResolved === resolved) {
+        apply();
+        return null;
+      }
+
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+      if (options.animate === true && !reducedMotion && typeof document.startViewTransition === 'function') {
+        const origin = options.origin || this._themePointerOrigin || null;
+        const element = options.element || this.root?.querySelector?.('#settings-theme');
+        const rect = element?.getBoundingClientRect?.();
+        const x = Number.isFinite(origin?.x) ? origin.x : rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+        const y = Number.isFinite(origin?.y) ? origin.y : rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+        root.style.setProperty('--theme-reveal-x', `${Math.round(x)}px`);
+        root.style.setProperty('--theme-reveal-y', `${Math.round(y)}px`);
+        root.classList.add('theme-circular-transition');
+        const transitionId = (this._themeTransitionId || 0) + 1;
+        this._themeTransitionId = transitionId;
+        try {
+          const transition = document.startViewTransition(apply);
+          Promise.resolve(transition.finished).catch(() => {}).finally(() => {
+            if (this._themeTransitionId !== transitionId) return;
+            root.classList.remove('theme-circular-transition');
+            root.style.removeProperty('--theme-reveal-x');
+            root.style.removeProperty('--theme-reveal-y');
+          });
+          return transition;
+        } catch {
+          root.classList.remove('theme-circular-transition');
+          root.style.removeProperty('--theme-reveal-x');
+          root.style.removeProperty('--theme-reveal-y');
+        }
+      }
+
+      apply();
+      return null;
+    }
+
+    async changeThemePreference(theme, event = null) {
+      const preference = ['light', 'dark', 'system'].includes(theme) ? theme : 'system';
+      const pointerOrigin = this._themePointerOrigin;
+      const freshPointerOrigin = pointerOrigin && Date.now() - pointerOrigin.at < 2500
+        ? { x: pointerOrigin.x, y: pointerOrigin.y }
+        : null;
+      this._themePointerOrigin = null;
+      // El selector solo cambia la vista previa. La preferencia persistida no
+      // se escribe en la caché ni en el servidor hasta pulsar Guardar.
+      if (!this._savedThemePreference) {
+        this._savedThemePreference = this.readCachedTheme() || 'system';
+      }
+      this.applyTheme(preference, {
+        animate: true, cache: false,
+        origin: freshPointerOrigin, element: event?.target
+      });
+      this._themePreferenceDirty = preference !== this._savedThemePreference;
+      this._themePreferenceVersion = (this._themePreferenceVersion || 0) + 1;
+      this._themePreferenceFeedback?.dismiss?.();
+      this._themePreferenceFeedback = beginActionToast(
+        this._themePreferenceDirty
+          ? 'Vista previa del tema. Pulsa «Guardar preferencias» para conservarlo.'
+          : 'Se restauró el último tema guardado.',
+        { duration: 4800 }
+      );
+      this._themePreferenceFeedback.info?.(
+        this._themePreferenceDirty
+          ? 'Este cambio aún no está guardado.'
+          : 'La preferencia guardada sigue siendo la misma.'
+      );
+      return Promise.resolve({ preview: true, saved: !this._themePreferenceDirty });
+    }
+
+    discardThemePreview() {
+      if (!this._themePreferenceDirty) return false;
+      const saved = ['light', 'dark', 'system'].includes(this._savedThemePreference)
+        ? this._savedThemePreference
+        : (this.readCachedTheme() || 'system');
+      this._themePreferenceVersion = (this._themePreferenceVersion || 0) + 1;
+      this._themePreferenceDirty = false;
+      this._themePreferenceFeedback?.dismiss?.();
+      this.applyTheme(saved, { cache: false, animate: false });
+      const control = this.root?.querySelector?.('#settings-theme');
+      if (control) control.value = saved;
+      return true;
+    }
+
+    async waitForAvatarImage(image) {
+      if (!image) return;
+      if (image.complete) {
+        if (image.naturalWidth === 0) throw new Error('No se pudo mostrar la imagen del avatar.');
+        if (typeof image.decode === 'function') await image.decode().catch(() => {});
+        return;
+      }
+      await new Promise((resolve, reject) => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', () => reject(new Error('No se pudo mostrar la imagen del avatar.')), { once: true });
+      });
+      if (typeof image.decode === 'function') await image.decode().catch(() => {});
     }
 
     async loadPreferencesInBackground() {
       if (!this.session.user) return;
+      const themeVersionAtRequest = this._themePreferenceVersion || 0;
       try {
         const result = await this.repository.settings();
         if (!this.session.user) return;
@@ -66,9 +170,18 @@ export class SettingsController {
           : { ...incomingProfile, previewUrl: incomingProfile.previewUrl || null };
         this.syncAvatarFromProfile(previousProfile, this.state.profile);
 
-        this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
-        this.cacheTheme(this.state.settings.theme);
-        this.applyTheme(this.state.settings.theme);
+        const localTheme = this.state.settings.theme;
+        const incomingSettings = result.settings || {};
+        const themeChangedWhileLoading = themeVersionAtRequest !== (this._themePreferenceVersion || 0);
+        const savedTheme = ['light', 'dark', 'system'].includes(incomingSettings.theme)
+          ? incomingSettings.theme : (this.readCachedTheme() || 'system');
+        this._savedThemePreference = savedTheme;
+        this.state.settings = {
+          ...this.state.settings, ...incomingSettings,
+          ...(this._themePreferenceDirty || themeChangedWhileLoading ? { theme: localTheme } : { theme: savedTheme })
+        };
+        this.cacheTheme(savedTheme);
+        this.applyTheme(this.state.settings.theme, { cache: !this._themePreferenceDirty && !themeChangedWhileLoading });
         // Actualizar los controles sin reconstruir el árbol: así conservamos
         // los nodos de imagen ya descargados y decodificados.
         const themeControl = this.root.querySelector('#settings-theme');
@@ -115,51 +228,65 @@ export class SettingsController {
     }
 
     async enablePushNotifications() {
-      const current = this.state.pushNotifications || {};
-      if (!current.supported) throw new Error('Este navegador o dispositivo no admite notificaciones push en esta instalación.');
-      const backend = await this.repository.pushConfig();
-      if (backend.enabled !== true || !backend.publicKey) {
-        throw new Error('Las notificaciones externas todavía no están configuradas en el servidor.');
-      }
+      const feedback = beginActionToast('Activando los avisos externos en este dispositivo…');
+      try {
+        const current = this.state.pushNotifications || {};
+        if (!current.supported) throw new Error('Este navegador o dispositivo no admite notificaciones push en esta instalación.');
+        const backend = await this.repository.pushConfig();
+        if (backend.enabled !== true || !backend.publicKey) {
+          throw new Error('Las notificaciones externas todavía no están configuradas en el servidor.');
+        }
 
-      let permission = Notification.permission;
-      if (permission === 'default') permission = await Notification.requestPermission();
-      if (permission !== 'granted') throw new Error('No se concedió permiso para mostrar notificaciones. Puedes activarlo en los ajustes del navegador.');
+        let permission = Notification.permission;
+        if (permission === 'default') permission = await Notification.requestPermission();
+        if (permission !== 'granted') throw new Error('No se concedió permiso para mostrar notificaciones. Puedes activarlo en los ajustes del navegador.');
 
-      const scopeUrl = new URL('./', document.baseURI);
-      const workerUrl = new URL('./service-worker.js', document.baseURI);
-      const registration = await navigator.serviceWorker.register(workerUrl.href, { scope: scopeUrl.pathname, updateViaCache: 'none' });
-      await navigator.serviceWorker.ready;
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        const padding = '='.repeat((4 - backend.publicKey.length % 4) % 4);
-        const binary = atob(backend.publicKey.replace(/-/g, '+').replace(/_/g, '/') + padding);
-        const applicationServerKey = Uint8Array.from(binary, character => character.charCodeAt(0));
-        subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+        const scopeUrl = new URL('./', document.baseURI);
+        const workerUrl = new URL('./service-worker.js', document.baseURI);
+        const registration = await navigator.serviceWorker.register(workerUrl.href, { scope: scopeUrl.pathname, updateViaCache: 'none' });
+        await navigator.serviceWorker.ready;
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          const padding = '='.repeat((4 - backend.publicKey.length % 4) % 4);
+          const binary = atob(backend.publicKey.replace(/-/g, '+').replace(/_/g, '/') + padding);
+          const applicationServerKey = Uint8Array.from(binary, character => character.charCodeAt(0));
+          subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+        }
+        await this.repository.subscribePush(subscription.toJSON());
+        this.state.pushNotifications = {
+          supported: true, configured: true, subscribed: true, browserSubscription: true,
+          permission: Notification.permission, busy: false
+        };
+        this.render();
+        feedback.success('Notificaciones externas activadas y registradas en este dispositivo.');
+      } catch (error) {
+        feedback.error(error.message || 'No se pudieron activar las notificaciones externas.');
+        error.actionFeedbackShown = true;
+        throw error;
       }
-      await this.repository.subscribePush(subscription.toJSON());
-      this.state.pushNotifications = {
-        supported: true, configured: true, subscribed: true, browserSubscription: true,
-        permission: Notification.permission, busy: false
-      };
-      this.render();
-      showToast('Notificaciones externas activadas en este dispositivo.', 'success');
     }
 
     async disablePushNotifications() {
-      const scope = new URL('./', document.baseURI).pathname;
-      const registration = await navigator.serviceWorker.getRegistration(scope);
-      const subscription = await registration?.pushManager.getSubscription();
-      if (subscription) {
-        await this.repository.unsubscribePush(subscription.endpoint);
-        await subscription.unsubscribe();
+      const feedback = beginActionToast('Desactivando los avisos externos…');
+      try {
+        const scope = new URL('./', document.baseURI).pathname;
+        const registration = await navigator.serviceWorker.getRegistration(scope);
+        const subscription = await registration?.pushManager.getSubscription();
+        if (subscription) {
+          await this.repository.unsubscribePush(subscription.endpoint);
+          await subscription.unsubscribe();
+        }
+        this.state.pushNotifications = {
+          ...(this.state.pushNotifications || {}), subscribed: false, browserSubscription: false,
+          permission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
+        };
+        this.render();
+        feedback.success('Notificaciones externas desactivadas en este dispositivo.');
+      } catch (error) {
+        feedback.error(error.message || 'No se pudieron desactivar las notificaciones externas.');
+        error.actionFeedbackShown = true;
+        throw error;
       }
-      this.state.pushNotifications = {
-        ...(this.state.pushNotifications || {}), subscribed: false, browserSubscription: false,
-        permission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
-      };
-      this.render();
-      showToast('Las notificaciones externas se desactivaron en este dispositivo.', 'success');
     }
 
     syncAvatarFromProfile(previousProfile = {}, nextProfile = {}) {
@@ -206,14 +333,14 @@ export class SettingsController {
           container.classList.remove('has-image', 'is-loading');
           container.setAttribute('aria-hidden', 'true');
           container.replaceChildren(placeholder);
-          return;
+          return null;
         }
         container.classList.add('has-image');
         container.classList.toggle('is-loading', !sameSource || !currentImage?.complete || currentImage?.naturalWidth === 0);
         container.setAttribute('aria-hidden', 'true');
         if (sameSource) {
           if (placeholder.parentNode !== container) container.prepend(placeholder);
-          return;
+          return currentImage;
         }
         const image = document.createElement('img');
         image.alt = '';
@@ -223,9 +350,10 @@ export class SettingsController {
         image.referrerPolicy = 'no-referrer';
         container.replaceChildren(placeholder, image);
         image.src = url;
+        return image;
       };
 
-      updateContainer(this.root.querySelector('.profile-avatar-preview'), 'avatar-preview-placeholder');
+      const previewImage = updateContainer(this.root.querySelector('.profile-avatar-preview'), 'avatar-preview-placeholder');
 
       const pickerLabel = this.root.querySelector('label[for="profile-avatar-input"]');
       if (pickerLabel) pickerLabel.textContent = url || persisted ? 'Cambiar avatar' : 'Agregar avatar';
@@ -244,10 +372,11 @@ export class SettingsController {
         }
       }
 
-      if (updateSidebar) {
-        updateContainer(this.root.querySelector('.user-mini .avatar'), 'avatar-image-placeholder');
-      }
+      const sidebarImage = updateSidebar
+        ? updateContainer(this.root.querySelector('.user-mini .avatar'), 'avatar-image-placeholder')
+        : null;
       this.view?.avatarNodeCache?.adopt?.(this.state.profile);
+      return { previewImage, sidebarImage };
     }
 
     async uploadProfileAvatar(file) {
@@ -255,9 +384,13 @@ export class SettingsController {
       if (!navigator.onLine) throw new Error('Necesitas conexión para actualizar tu avatar.');
       const previousProfile = { ...(this.state.profile || { avatarUrl: null, avatarPath: null }) };
       const previewUrl = URL.createObjectURL(file);
+      const feedback = beginActionToast('Preparando y subiendo tu avatar…');
       this.state.profile = { ...previousProfile, previewUrl };
-      // La vista previa aparece inmediatamente, antes de procesar o subir el archivo.
-      this.updateAvatarPreview(previewUrl, { persisted: Boolean(previousProfile.avatarUrl), updateSidebar: true });
+      // El aviso de proceso aparece a la vez que la vista previa local. Así la
+      // persona sabe que lo que ve aún está sincronizándose con su cuenta.
+      const initialImages = this.updateAvatarPreview(previewUrl, {
+        persisted: Boolean(previousProfile.avatarUrl), updateSidebar: true
+      });
 
       try {
         const { prepareImageFile } = await import('../services/image-processing.js');
@@ -267,53 +400,67 @@ export class SettingsController {
         const result = await this.repository.setAvatar(media.path);
         const savedProfile = result.profile || { avatarPath: media.path, avatarUrl: null };
         const remoteUrl = savedProfile.avatarUrl || null;
-        this.state.profile = {
-          ...previousProfile,
-          ...savedProfile,
-          // Conserva el object URL local hasta que el recurso privado esté listo.
-          previewUrl
-        };
+        this.state.profile = { ...previousProfile, ...savedProfile, previewUrl };
         this.view?.avatarNodeCache?.adopt?.(this.state.profile);
 
         if (remoteUrl) {
-          // Precargar y decodificar antes de sustituir la foto local mantiene
-          // una imagen visible durante toda la transición de Storage.
-          const warmedImage = new Image();
-          warmedImage.decoding = 'async';
-          warmedImage.referrerPolicy = 'no-referrer';
-          warmedImage.src = remoteUrl;
           try {
-            if (typeof warmedImage.decode === 'function') await warmedImage.decode();
-            else if (!warmedImage.complete) await new Promise((resolve, reject) => {
-              warmedImage.onload = resolve;
-              warmedImage.onerror = reject;
-            });
+            // Precargar y decodificar la URL firmada antes de sustituir la vista
+            // previa. El mensaje final llega junto con la imagen ya decodificada.
+            const warmedImage = new Image();
+            warmedImage.decoding = 'async';
+            warmedImage.referrerPolicy = 'no-referrer';
+            warmedImage.src = remoteUrl;
+            await this.waitForAvatarImage(warmedImage);
             this.state.profile = { ...this.state.profile, previewUrl: null };
-            this.updateAvatarPreview(remoteUrl, { persisted: true, updateSidebar: true });
+            const renderedImages = this.updateAvatarPreview(remoteUrl, { persisted: true, updateSidebar: true });
+            await Promise.all([renderedImages?.previewImage, renderedImages?.sidebarImage]
+              .filter(Boolean).map(imageNode => this.waitForAvatarImage(imageNode)));
             URL.revokeObjectURL(previewUrl);
+            feedback.success('Tu avatar se actualizó y ya está sincronizado.');
           } catch {
-            // La foto local sigue visible y válida aunque la URL firmada falle.
-            this.state.profile = { ...this.state.profile, previewUrl };
+            // El endpoint ya confirmó el cambio: un fallo de la URL firmada no
+            // debe revertir el perfil guardado ni hacer creer que la subida falló.
+            this.state.profile = { ...this.state.profile, avatarUrl: remoteUrl, previewUrl };
+            const localImages = this.updateAvatarPreview(previewUrl, { persisted: true, updateSidebar: true });
+            await Promise.all([localImages?.previewImage, localImages?.sidebarImage]
+              .filter(Boolean).map(imageNode => this.waitForAvatarImage(imageNode).catch(() => {})));
+            feedback.success('Tu avatar se guardó. La vista previa local permanece visible mientras se renueva la imagen privada.');
           }
         } else {
+          await Promise.all([initialImages?.previewImage, initialImages?.sidebarImage]
+            .filter(Boolean).map(imageNode => this.waitForAvatarImage(imageNode)));
           this.updateAvatarPreview(previewUrl, { persisted: Boolean(savedProfile.avatarPath), updateSidebar: true });
+          feedback.success('Tu avatar se guardó y ya está visible.');
         }
-        showToast('Tu avatar se actualizó.', 'success');
+        this._avatarRefreshAttemptedPath = null;
       } catch (error) {
         this.state.profile = previousProfile;
-        this.updateAvatarPreview(previousProfile.previewUrl || previousProfile.avatarUrl || null, {
+        const restored = this.updateAvatarPreview(previousProfile.previewUrl || previousProfile.avatarUrl || null, {
           persisted: Boolean(previousProfile.avatarUrl), updateSidebar: Boolean(previousProfile.avatarUrl)
         });
+        await Promise.all([restored?.previewImage, restored?.sidebarImage]
+          .filter(Boolean).map(imageNode => this.waitForAvatarImage(imageNode).catch(() => {})));
         URL.revokeObjectURL(previewUrl);
+        feedback.error(error.message || 'No se pudo actualizar tu avatar.');
+        error.actionFeedbackShown = true;
         throw error;
       }
     }
 
     async removeProfileAvatar() {
-      const result = await this.repository.removeAvatar();
-      this.state.profile = result.profile || { avatarPath: null, avatarUrl: null };
-      this.render();
-      showToast('Se quitó tu avatar.', 'success');
+      const feedback = beginActionToast('Quitando tu avatar…');
+      try {
+        const result = await this.repository.removeAvatar();
+        this.state.profile = result.profile || { avatarPath: null, avatarUrl: null, previewUrl: null };
+        this.updateAvatarPreview(null, { persisted: false, updateSidebar: true });
+        this.render();
+        feedback.success('Tu avatar se quitó del perfil.');
+      } catch (error) {
+        feedback.error(error.message || 'No se pudo quitar el avatar.');
+        error.actionFeedbackShown = true;
+        throw error;
+      }
     }
 
     async refreshSessions() {

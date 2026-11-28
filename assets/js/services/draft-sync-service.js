@@ -6,6 +6,7 @@ import { ApiError } from './api-client.js';
  * volver a concentrar persistencia en DraftController. */
 export async function syncDraftSnapshot(controller, initialSnapshot, initialStorageKey, options = {}) {
   if (!initialSnapshot || !navigator.onLine) return { status: 'local' };
+  if (controller.discardedLocalDraftKeys?.has(initialStorageKey)) return { status: 'discarded' };
   if (!initialSnapshot.letterId && !controller.hasDraftBody(initialSnapshot.body)) {
     await controller.clearEmptyNewDraft(initialStorageKey);
     return { status: 'empty' };
@@ -29,6 +30,18 @@ export async function syncDraftSnapshot(controller, initialSnapshot, initialStor
   const title = snapshot.title?.trim() || 'Sin título';
   
   const storeSynced = async (draft, latestSnapshot, currentStorageKey) => {
+    if (controller.discardedLocalDraftKeys?.has(initialStorageKey) || controller.discardedLocalDraftKeys?.has(currentStorageKey)) {
+      controller.discardedDraftIds.add(draft.id);
+      try {
+        const moved = await controller.repository.moveToTrash(draft.id);
+        if (!['trashed', 'already_trashed'].includes(moved?.status)) throw new Error('DRAFT_DISCARD_SYNC_RACE');
+      } catch (error) {
+        // No se elimina la copia local si no se confirma el retiro remoto.
+        throw error;
+      }
+      await controller.clearLocalDraftForLetter(draft.id, currentStorageKey);
+      return { status: 'discarded' };
+    }
     if (controller.discardedDraftIds.has(draft.id)) {
       await controller.clearLocalDraftForLetter(draft.id, currentStorageKey);
       return { status: 'discarded' };

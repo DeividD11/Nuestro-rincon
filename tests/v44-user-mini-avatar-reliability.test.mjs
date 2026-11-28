@@ -119,11 +119,11 @@ test('el perfil vuelve a firmarse si no hay imagen lateral sana aunque la ruta s
   assert.match(events, /loadPreferencesInBackground\?\.\(\)\.catch/);
 });
 
-test('el spinner de user-mini permanece fijo en el centro durante toda la vuelta', async () => {
+test('v49 mantiene estáticas las imágenes y placeholders durante el scroll', async () => {
   const css = await read('../assets/css/correspondence.css');
-  const rules = [...css.matchAll(/\.user-mini \.avatar\.has-image\.is-loading::after\s*\{([^}]*)\}/g)];
-  const finalRule = rules.map(match => match[1]).findLast(rule => /animation:\s*letter-stamp-centered-spin/.test(rule)) || '';
-  assert.match(finalRule, /transform:\s*translate\(-50%, -50%\) rotate\(0deg\)/);
-  assert.match(finalRule, /animation:\s*letter-stamp-centered-spin/);
-  assert.match(css, /@keyframes letter-stamp-centered-spin\s*\{[\s\S]*translate\(-50%, -50%\) rotate\(360deg\)/);
+  const finalOverrides = css.slice(css.lastIndexOf('v49: imágenes estáticas'));
+  assert.match(finalOverrides, /animation:\s*none !important/);
+  assert.match(finalOverrides, /transform:\s*none !important/);
+  assert.match(finalOverrides, /transition:\s*none !important/);
+  assert.doesNotMatch(finalOverrides, /letter-stamp-centered-spin/);
 });

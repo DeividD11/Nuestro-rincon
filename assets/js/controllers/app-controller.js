@@ -20,12 +20,17 @@ export class AppController {
     this.state = new AppState();
     this.view = new AppView(root);
     this.previousListRoute = 'inbox';
+    this.navigationHistory = [];
     this.autosaveTimer = null;
     this.localPersistTimer = null;
     this.draftSyncQueue = new DraftSyncQueue();
     this.draftIdentity = new Map();
     // Un borrador descartado no debe resucitar por una sincronización pendiente.
     this.discardedDraftIds = new Set();
+    // Claves locales descartadas: evitan que una sincronización en vuelo
+    // vuelva a crear un borrador después de que la persona lo haya eliminado.
+    this.discardedLocalDraftKeys = new Set();
+    this._bulkPurgingTrash = false;
     this.notificationPoller = null;
     this.sessionPoller = null;
     this._sessionRevokedWhileRecoveryPending = false;
@@ -48,6 +53,11 @@ export class AppController {
     this.paginationObserver = null;
     this.editorInputVersion = 0;
     this.systemThemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
+    this._themePreferenceDirty = false;
+    this._themePreferenceVersion = 0;
+    this._themeSaveQueue = Promise.resolve();
+    this._themePointerOrigin = null;
+    this._themeTransitionId = 0;
   }
 
 

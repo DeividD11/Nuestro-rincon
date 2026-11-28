@@ -7,6 +7,7 @@ export class LetterRepository {
   saveDraft(data, options = {}) { return this.api.letters('draft:save', data, options); }
   sendDraft(data) { return this.api.letters('draft:send', data); }
   reply(data) { return this.api.letters('reply', data); }
+  editSent(data) { return this.api.letters('letter:edit', data); }
   markRead(threadId) { return this.api.letters('read', { threadId }); }
   setFavorite(letterId, favorite) { return this.api.letters('favorite', { letterId, favorite }); }
   setArchive(letterId, archived) { return this.api.letters('archive', { letterId, archived }); }

@@ -1,0 +1,26 @@
+/* Revelación radial nativa de View Transitions: el tema nuevo nace en el control. */
+html.theme-circular-transition::view-transition-group(root) {
+  animation-duration: 720ms;
+  animation-timing-function: cubic-bezier(.2, .72, .18, 1);
+}
+html.theme-circular-transition::view-transition-old(root) {
+  animation: none;
+  z-index: 1;
+}
+html.theme-circular-transition::view-transition-new(root) {
+  z-index: 2;
+  clip-path: circle(0 at var(--theme-reveal-x, 50vw) var(--theme-reveal-y, 50vh));
+  animation: theme-circular-reveal 720ms cubic-bezier(.2, .72, .18, 1) both;
+  will-change: clip-path;
+}
+@keyframes theme-circular-reveal {
+  to { clip-path: circle(160vmax at var(--theme-reveal-x, 50vw) var(--theme-reveal-y, 50vh)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.theme-circular-transition::view-transition-group(root),
+  html.theme-circular-transition::view-transition-new(root) {
+    animation-duration: 1ms;
+    animation: none;
+    clip-path: none;
+  }
+}

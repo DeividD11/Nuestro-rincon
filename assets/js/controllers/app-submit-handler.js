@@ -1,6 +1,6 @@
 import { putLocalDraft, getLocalDraft, deleteLocalDraft, getLocalDraftsForUser, deleteLocalDraftsForUser } from '../services/local-drafts.js';
 import { ApiError } from '../services/api-client.js';
-import { plainTextFromHtml, sanitizeRichHtml, showToast, showConfirmDialog, escapeHtml } from '../utils/dom.js';
+import { plainTextFromHtml, sanitizeRichHtml, showToast, showConfirmDialog, escapeHtml, beginActionToast } from '../utils/dom.js';
 import { readPendingRecovery, createPendingRegistration, clearPendingRecovery, markPendingRecoveryConfirmed, isUncertainRequestError } from '../services/recovery-handoff.js';
 import { encryptRecoveryVault, decryptRecoveryVault, downloadRecoveryVault } from '../services/recovery-vault.js';
 
@@ -11,6 +11,19 @@ event.preventDefault();
 const data = Object.fromEntries(new FormData(form).entries());
 const button = form.querySelector('button[type="submit"]');
 if (button) { button.disabled = true; button.dataset.originalText = button.textContent; button.textContent = 'Un momento…'; }
+const actionFeedbackMessages = {
+  'login-form': 'Iniciando sesión…',
+  'register-form': 'Creando tu cuenta…',
+  'settings-form': 'Guardando las preferencias…',
+  'recovery-form': 'Actualizando la contraseña…',
+  'recovery-vault-import-form': 'Desbloqueando la copia de recuperación…',
+  'recovery-vault-export-form': 'Protegiendo los códigos de recuperación…',
+  'profile-form': 'Actualizando tu nombre…',
+  'account-form': 'Actualizando los datos de tu cuenta…',
+  'password-form': 'Actualizando tu contraseña…',
+  'recovery-code-form': 'Renovando los códigos de recuperación…'
+};
+let actionFeedback = actionFeedbackMessages[form.id] ? beginActionToast(actionFeedbackMessages[form.id]) : null;
 try {
   if (form.id === 'login-form') {
     await this.session.login(data.identifier, data.password);
@@ -20,6 +33,7 @@ try {
     await this.openRoute('home');
     this.startNotificationPolling();
     this.startSessionRefreshPolling();
+    actionFeedback?.success('Sesión iniciada correctamente.');
   } else if (form.id === 'register-form') {
     const pending = this.getRegistrationRecoveryHandoff(data);
     const registrationCodes = Array.isArray(pending.recoveryCodes) ? pending.recoveryCodes : [pending.recoveryCode];
@@ -48,6 +62,7 @@ try {
         continueLabel: this.session.user ? 'Continuar a la aplicación' : 'Ir al inicio de sesión'
       });
       if (this.session.user) this.startSessionRefreshPolling();
+      actionFeedback?.info(result.message || 'La cuenta ya está creada. Inicia sesión para continuar.');
       return;
     }
     if (result.recoveryCodeCurrent === true) markPendingRecoveryConfirmed();
@@ -72,13 +87,16 @@ try {
       retryLabel: 'Reintentar el registro',
       continueLabel: this.session.user ? (registrationBundle ? 'Ya guardé los diez códigos' : 'Ya lo guardé') : (registrationBundle ? 'Ya guardé los diez códigos; ir al acceso' : 'Ya lo guardé; ir al acceso')
     });
+    actionFeedback?.success(result.authenticated === false
+      ? 'La cuenta se creó. Guarda los códigos de recuperación e inicia sesión.'
+      : 'La cuenta se creó correctamente. Guarda los códigos de recuperación antes de continuar.');
   } else if (form.id === 'recovery-form') {
     await this.session.api.auth('recover-with-code', {
       username: data.username,
       recoveryCode: data.recoveryCode,
       password: data.password
     });
-    showToast('La contraseña fue actualizada. Por seguridad se invalidaron los demás códigos de respaldo. Inicia sesión y genera un conjunto nuevo.', 'success');
+    actionFeedback?.success('La contraseña fue actualizada. Por seguridad se invalidaron los demás códigos de respaldo. Inicia sesión y genera un conjunto nuevo.');
     this.view.renderLogin();
   } else if (form.id === 'recovery-vault-import-form') {
     const file = data.vaultFile;
@@ -97,7 +115,7 @@ try {
     select.hidden = false;
     input.value = codes[0];
     status.textContent = 'Copia desbloqueada. Se encontraron diez códigos; elige uno que no hayas utilizado.';
-    showToast('Copia protegida abierta. Selecciona un código disponible.', 'success');
+    actionFeedback?.success('La copia protegida se abrió. Selecciona un código disponible.');
     form.reset();
   } else if (form.id === 'recovery-vault-export-form') {
     if (data.passphrase !== data.confirmPassphrase) throw new Error('Las frases secretas no coinciden.');
@@ -105,13 +123,13 @@ try {
     if (!Array.isArray(codes) || codes.length !== 10) throw new Error('No hay diez códigos disponibles para proteger.');
     const vault = await encryptRecoveryVault(codes, data.passphrase);
     downloadRecoveryVault(vault);
-    showToast('Copia cifrada descargada. Conserva también su frase secreta.', 'success');
+    actionFeedback?.success('La copia cifrada se descargó. Conserva también su frase secreta.');
     form.reset();
   } else if (form.id === 'profile-form') {
     const result = await this.repository.renameProfile(data.displayName.trim());
     this.session.user = { ...this.session.user, ...result.user };
     this.state.user = this.session.user;
-    showToast('Tu nombre se actualizó.', 'success');
+    actionFeedback?.success('Tu nombre se actualizó correctamente.');
     this.render();
   } else if (form.id === 'account-form') {
     const result = await this.session.api.auth('account:update', {
@@ -121,7 +139,7 @@ try {
     });
     this.session.user = { ...this.session.user, ...result.user };
     this.state.user = this.session.user;
-    showToast('Los datos de tu cuenta se actualizaron.', 'success');
+    actionFeedback?.success('Los datos de tu cuenta se actualizaron correctamente.');
     this.render();
   } else if (form.id === 'password-form') {
     if (data.newPassword !== data.confirmPassword) throw new Error('La confirmación de la nueva contraseña no coincide.');
@@ -130,7 +148,7 @@ try {
       newPassword: data.newPassword
     });
     await this.repository.sessions().then(result => { this.state.sessions = result.sessions || []; }).catch(() => {});
-    showToast('Contraseña actualizada. Se cerraron las demás sesiones.', 'success');
+    actionFeedback?.success('La contraseña se actualizó y las demás sesiones se cerraron.');
     this.render();
   } else if (form.id === 'recovery-code-form') {
     const pending = this.getRotationRecoveryHandoff();
@@ -174,6 +192,7 @@ try {
         continueLabel: 'Ya guardé los diez códigos'
       });
     }
+    actionFeedback?.success('Los códigos de recuperación se renovaron correctamente. Guárdalos fuera de este dispositivo.');
   } else if (form.id === 'delete-account-form') {
     if (data.confirmation !== 'ELIMINAR') throw new Error('Escribe exactamente ELIMINAR para confirmar la eliminación de tu cuenta.');
     const approved = await showConfirmDialog({
@@ -185,6 +204,7 @@ try {
       cancelLabel: 'Conservar cuenta'
     });
     if (!approved) return;
+    actionFeedback = beginActionToast('Eliminando tu cuenta de manera segura…');
     const userId = this.session.user.id;
     const result = await this.session.api.auth('account:delete', {
       currentPassword: data.currentPassword,
@@ -198,22 +218,39 @@ try {
     this.resetPrivateSessionState(null);
     this.session.clearSession();
     this.state.editor = null;
-    this.view.renderLogin('Tu cuenta se eliminó. Las cartas compartidas que ya fueron enviadas se conservaron para la otra persona.');
+    this.view.renderLogin('', 'Tu cuenta se eliminó correctamente. Las cartas ya enviadas se conservaron para la otra persona.');
+    actionFeedback.success('Tu cuenta se eliminó correctamente.');
   } else if (form.id === 'settings-form') {
     const formData = new FormData(form);
-    const result = await this.repository.saveSettings({
+    const themeVersion = this._themePreferenceVersion || 0;
+    const payload = {
       theme: formData.get('theme') || 'system',
       timeZone: formData.get('timeZone'),
       notificationsEnabled: formData.get('notifications') === 'on'
-    });
-    this.state.settings = { ...this.state.settings, ...(result.settings || {}) };
-    this.cacheTheme(this.state.settings.theme);
-    this.applyTheme(this.state.settings.theme);
+    };
+    const result = await this.repository.saveSettings(payload);
+    const themeChangedWhileSaving = themeVersion !== (this._themePreferenceVersion || 0);
+    const currentTheme = this.state.settings.theme;
+    const savedTheme = ['light', 'dark', 'system'].includes(result.settings?.theme)
+      ? result.settings.theme : payload.theme;
+    this._savedThemePreference = savedTheme;
+    this.state.settings = {
+      ...this.state.settings,
+      ...(result.settings || {}),
+      theme: themeChangedWhileSaving ? currentTheme : savedTheme
+    };
+    if (!themeChangedWhileSaving) this._themePreferenceDirty = false;
+    this.cacheTheme(savedTheme);
+    this.applyTheme(this.state.settings.theme, { cache: !themeChangedWhileSaving });
     this.invalidateRouteCache();
-    showToast('Preferencias guardadas.', 'success');
     this.render();
+    actionFeedback?.success('Las preferencias se guardaron correctamente.');
   }
 } catch (error) {
+  if (actionFeedback) {
+    actionFeedback.error(error.message || 'No se pudo completar la acción.');
+    error.actionFeedbackShown = true;
+  }
   if (form.id === 'login-form') this.view.renderLogin(error.message);
   else if (form.id === 'register-form') {
     const pending = readPendingRecovery();
@@ -269,7 +306,7 @@ try {
       clearPendingRecovery();
       this._lastRecoveryCode = '';
       this._lastRecoveryCodes = [];
-      showToast(error.message || 'No se pudo renovar los códigos.', 'error');
+      if (!error?.actionFeedbackShown) showToast(error.message || 'No se pudo renovar los códigos.', 'error');
       if (this.session.user) {
         await this.openRoute('settings');
         this.loadPreferencesInBackground();
@@ -280,7 +317,7 @@ try {
       }
     }
   }
-  else showToast(error.message || 'No se pudo completar la operación.', 'error');
+  else if (!error?.actionFeedbackShown) showToast(error.message || 'No se pudo completar la operación.', 'error');
 } finally {
   if (button?.isConnected) { button.disabled = false; button.textContent = button.dataset.originalText || 'Continuar'; }
 }

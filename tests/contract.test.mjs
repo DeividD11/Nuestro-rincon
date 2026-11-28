@@ -58,13 +58,14 @@ test('el backend habilita CORS sin cookies y exige sesión propia para datos pri
 });
 
 
-test('la carta puede descargarse como HTML UTF-8 sin scripts activos', async () => {
+test('la interfaz ofrece PDF completo y elimina las descargas TXT y HTML', async () => {
   const controller = await readControllerSource();
   const view = await readAppViewSource();
-  assert.match(controller, /async downloadHtml\(letterId\)/);
-  assert.match(controller, /text\/html;charset=utf-8/);
-  assert.match(controller, /sanitizeRichHtml\(letter\.body/);
-  assert.match(view, /data-action=\"download-html\"/);
+  assert.match(controller, /async saveLetterAsPdf\(\)/);
+  assert.match(controller, /threadNextCursor/);
+  assert.match(controller, /renderLetterBodyHtml\(item\.body \|\| '', \{ eagerImages: true, showPlaceholder: false \}\)/);
+  assert.match(view, /data-action=\"print-letter\"[^>]*>▤ Guardar como PDF/);
+  assert.doesNotMatch(view, /data-action=\"download-(?:txt|html)\"/);
 });
 
 
@@ -162,7 +163,10 @@ test('la navegación precarga secciones y reutiliza una caché breve para evitar
   assert.match(controller, /prefetchRoute\(target\.dataset\.route\)/);
   assert.match(controller, /Date\.now\(\) - cached\.at <= this\.routeCacheTtl/);
   assert.match(controller, /const accountId = this\.session\?\.user\?\.id \|\| 'guest'/);
-  assert.match(controller, /No retrasar el cambio de sección esperando IndexedDB/);
+  const navigation = await read('../assets/js/controllers/navigation-controller.js');
+  const routeChange = navigation.slice(navigation.indexOf('async openRoute'), navigation.indexOf('async fetchRouteData'));
+  assert.match(routeChange, /putLocalDraft\(replySnapshot\)\.then/);
+  assert.doesNotMatch(routeChange, /await putLocalDraft/);
 });
 
 test('las preferencias guardan el tema claro, oscuro o del sistema por usuario', async () => {
@@ -172,8 +176,12 @@ test('las preferencias guardan el tema claro, oscuro o del sistema por usuario',
   const css = await readCssBundle();
   assert.match(view, /id="settings-theme" name="theme"/);
   assert.match(view, /option value="dark"/);
-  assert.match(controller, /cacheTheme\(this\.state\.settings\.theme\)/);
-  assert.match(controller, /this\.applyTheme\(this\.state\.settings\.theme\)/);
+  const settings = await read('../assets/js/controllers/settings-controller.js');
+  const submit = await read('../assets/js/controllers/app-submit-handler.js');
+  assert.match(settings, /changeThemePreference[\s\S]*cache: false/);
+  assert.match(settings, /discardThemePreview[\s\S]*applyTheme\(saved, \{ cache: false/);
+  assert.match(submit, /repository\.saveSettings\(payload\)/);
+  assert.match(submit, /this\.cacheTheme\(savedTheme\)/);
   assert.match(api, /allowedThemes = new Set\(\['light','dark','system'\]\)/);
   assert.match(api, /theme, time_zone: timeZone/);
   assert.match(css, /html\[data-theme="dark"\]/);
@@ -258,7 +266,8 @@ test('el tema se aplica antes de los estilos y cubre login, registro y recuperac
   assert.match(html, /assets\/js\/theme-boot\.js/);
   assert.match(boot, /nuestro-rincon:theme:last/);
   assert.match(boot, /prefers-color-scheme: dark/);
-  assert.match(controller, /this\.systemThemeMedia[\s\S]*applyTheme\('system'\)/);
+  const events = await read('../assets/js/controllers/app-event-coordinator-controller.js');
+  assert.match(events, /systemThemeMedia\?\.addEventListener\?\.\('change'[\s\S]*applyTheme\('system'/);
   assert.match(css, /html\[data-theme="dark"\] \.auth-page/);
   assert.match(css, /html\[data-theme="dark"\] \.auth-card/);
   assert.match(css, /html\[data-theme="dark"\] \.auth-card \.field input/);

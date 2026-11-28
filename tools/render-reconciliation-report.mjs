@@ -5,8 +5,8 @@ import { basename, join, resolve } from 'node:path';
 const [jsonPath, rootArg] = process.argv.slice(2);
 if (!jsonPath || !rootArg) throw new Error('Uso: node tools/render-reconciliation-report.mjs <remote.json> <project-root>');
 const root = resolve(rootArg);
-const remoteText = (await readFile(jsonPath, 'utf8')).trim();
-const remote = JSON.parse(remoteText);
+const remote = JSON.parse((await readFile(jsonPath, 'utf8')).trim());
+const manifest = JSON.parse(await readFile(join(root, 'supabase', 'diagnostics', 'edge-rpc-contract.json'), 'utf8'));
 const migrationDirectory = join(root, 'supabase', 'migrations');
 const files = (await readdir(migrationDirectory)).filter(file => file.endsWith('.sql'));
 const localMigrations = files.map(file => {
@@ -20,18 +20,30 @@ const onlyLocal = localMigrations.filter(item => !remoteVersions.has(item.versio
 const onlyRemote = remoteMigrations.filter(item => !localVersions.has(String(item.version)));
 const shared = localMigrations.filter(item => remoteVersions.has(item.version));
 const functions = Array.isArray(remote.functions) ? remote.functions : [];
-const functionNames = new Set(functions.map(item => item.name));
-const expectedFunctions = [
-  ['start_app_auth_attempt', 'Rate limit per cuenta/IP para login, recuperación y registro'],
-  ['register_app_user_with_invite_idempotent_bundle', 'Alta idempotente con paquete de diez códigos'],
-  ['rotate_app_recovery_codes_bundle', 'Rotación atómica de diez códigos'],
-  ['list_user_letters_cursor', 'Paginación de cartas por cursor'],
-  ['rename_app_profile', 'Actualización transaccional del perfil']
-];
 const tables = Array.isArray(remote.tables) ? remote.tables : [];
 const insecureGrants = tables.filter(t => t.anonSelect || t.anonInsert || t.authenticatedSelect || t.authenticatedInsert);
 const rlsOff = tables.filter(t => !t.rlsEnabled);
 const check = value => value ? 'sí' : 'no';
+const signature = item => String(item.arguments || '').replace(/\s+/g, ' ').trim();
+const expectedSearchPath = String(manifest.principles?.searchPath || '').toLowerCase();
+const contractRows = manifest.functions.map(expected => {
+  const sameName = functions.filter(item => item.name === expected.name);
+  const exact = sameName.filter(item => signature(item) === expected.arguments);
+  const item = exact.length === 1 ? exact[0] : null;
+  const actualSearchPath = String(item?.searchPath || '').replace(/^search_path=/i, '').trim().toLowerCase();
+  const checks = {
+    exists: Boolean(item),
+    uniqueSignature: sameName.length === 1 && exact.length === 1,
+    securityInvoker: item ? item.securityDefiner === false : false,
+    noAnon: item ? item.anonExecute === false : false,
+    noAuthenticated: item ? item.authenticatedExecute === false : false,
+    serviceRole: item ? item.serviceRoleExecute === true : false,
+    pinnedSearchPath: item ? actualSearchPath === expectedSearchPath : false
+  };
+  return { expected, sameName, item, checks, compatible: Object.values(checks).every(Boolean) };
+});
+const incompatible = contractRows.filter(row => !row.compatible);
+const compatibleCount = contractRows.length - incompatible.length;
 const md = [];
 md.push('# Informe de reconciliación Supabase (solo lectura)', '');
 md.push(`- Proyecto: \`${process.env.NR_RECONCILE_PROJECT_REF || 'no indicado'}\``);
@@ -50,13 +62,16 @@ else md.push('- Ninguna');
 md.push('', '### Remotas sin archivo local', '');
 if (onlyRemote.length) md.push(...onlyRemote.map(item => `- \`${item.version}\` — \`${item.name || 'nombre no devuelto'}\``));
 else md.push('- Ninguna');
-md.push('', '## RPC críticas', '');
-md.push('| RPC | Existe | Firma | Propietario | SECURITY DEFINER | anon EXECUTE | authenticated EXECUTE | service_role EXECUTE |');
-md.push('|---|---:|---|---|---:|---:|---:|---:|');
-for (const [name] of expectedFunctions) {
-  const items = functions.filter(item => item.name === name);
-  if (!items.length) md.push(`| \`${name}\` | no | — | — | — | — | — | — |`);
-  for (const item of items) md.push(`| \`${name}\` | sí | \`${item.arguments}\` | \`${item.owner}\` | ${check(item.securityDefiner)} | ${check(item.anonExecute)} | ${check(item.authenticatedExecute)} | ${check(item.serviceRoleExecute)} |`);
+md.push('', '## Contrato de RPC requerido por Edge Functions', '');
+md.push(`- RPC compatibles: **${compatibleCount}/${contractRows.length}**`);
+md.push(`- RPC incompatibles o ausentes: **${incompatible.length}**`, '');
+md.push('| RPC | Resultado | Firma exacta | SECURITY INVOKER | anon EXECUTE | authenticated EXECUTE | service_role EXECUTE | search_path |');
+md.push('|---|---:|---|---:|---:|---:|---:|---:|');
+for (const row of contractRows) {
+  const { expected, item, sameName, checks } = row;
+  const actualSig = item ? `\`${signature(item)}\`` : sameName.length ? sameName.map(entry => `\`${signature(entry)}\``).join('<br>') : '—';
+  const searchPath = item?.searchPath || '—';
+  md.push(`| \`${expected.name}\` | ${row.compatible ? 'compatible' : '**BLOQUEA RELEASE**'} | ${actualSig} | ${check(checks.securityInvoker)} | ${check(item?.anonExecute === false)} | ${check(item?.authenticatedExecute === false)} | ${check(checks.serviceRole)} | \`${searchPath}\` |`);
 }
 md.push('', '## Tablas, RLS y privilegios directos', '');
 md.push(`- Tablas públicas detectadas: **${tables.length}**`);
@@ -70,7 +85,12 @@ md.push(`- Índices incluidos en el diagnóstico: **${(remote.indexes || []).len
 md.push(`- Triggers incluidos en el diagnóstico: **${(remote.triggers || []).length}**`, '');
 md.push('## Interpretación y siguiente paso', '');
 md.push('- Los timestamps comparan el directorio de migraciones con `supabase_migrations.schema_migrations`; por sí solos **no prueban** que el SQL ejecutado coincida con el archivo local.');
-md.push('- La presencia y firma de una RPC tampoco demuestra identidad de su definición SQL. Revisa `definitionMd5`, propietario, permisos, dependencias, triggers, índices y constraints contra el resultado esperado antes de reparar el ledger.');
+md.push('- El contrato de RPC valida nombre, firma PostgreSQL exacta, seguridad invoker, grants mínimos y `search_path` fijado. No compara la definición completa; `definitionMd5` queda disponible para diff más profundo.');
 md.push('- No ejecutes `supabase migration repair` solo para hacer desaparecer diferencias. Ese comando ajusta el historial; no aplica ni revierte el DDL.');
 md.push('- No uses `db push`, `db reset`, `apply_migration` ni despliegues de funciones como parte de este diagnóstico.', '');
+md.push(`## Estado para release: **${incompatible.length ? 'BLOQUEADO' : 'RPC COMPATIBLES'}**`);
+md.push(incompatible.length
+  ? 'Corrige/aplica únicamente las migraciones que aportan objetos requeridos, prueba en un entorno aislado y vuelve a ejecutar este diagnóstico.'
+  : 'Las RPC cumplen el contrato declarado. El historial de migraciones sigue requiriendo reconciliación documental y no debe repararse por timestamp sin comparar DDL.', '');
 process.stdout.write(`${md.join('\n')}\n`);
+if (incompatible.length) process.exitCode = 2;

@@ -1,4 +1,4 @@
-import { showToast, showConfirmDialog } from '../utils/dom.js';
+import { showToast, showConfirmDialog, beginActionToast } from '../utils/dom.js';
 import { readPendingRecovery } from '../services/recovery-handoff.js';
 
 export async function handleClick(event) {
@@ -15,7 +15,7 @@ if (!actionTarget) {
   return;
 }
 const action = actionTarget.dataset.action;
-const guardedLetterActions = new Set(['toggle-favorite','toggle-archive','trash-letter','restore-letter','purge-letter','reply-letter','edit-draft','preview-send-draft']);
+const guardedLetterActions = new Set(['toggle-favorite','toggle-archive','trash-letter','restore-letter','purge-letter','reply-letter','edit-draft','preview-send-draft','edit-sent-letter']);
 const guardedLetterId = guardedLetterActions.has(action) ? String(actionTarget.dataset.letterId || '') : '';
 const guardedButtons = guardedLetterId
   ? [...this.root.querySelectorAll('button[data-letter-id]')].filter(button => button.dataset.letterId === guardedLetterId)
@@ -83,11 +83,13 @@ try {
         detail: 'Podrás volver a entrar con tu nombre de usuario y contraseña.',
         confirmLabel: 'Cerrar sesión', cancelLabel: 'Seguir aquí', icon: '↗'
       });
-      if (approved) { await this.session.logout(); this.stopNotificationPolling(); this.stopSessionRefreshPolling(); this.resetPrivateSessionState(null); this.view.renderLogin(); }
+      if (approved) { await this.session.logout(); this.stopNotificationPolling(); this.stopSessionRefreshPolling(); this.resetPrivateSessionState(null); this.view.renderLogin('', 'Has cerrado sesión correctamente en este dispositivo.'); }
       break;
     }
     case 'create-invitation': {
       actionTarget.disabled = true;
+      const feedback = beginActionToast('Generando el código de invitación…');
+      try {
       const result = await this.session.api.auth('invitation:create');
       this.state.invitation = {
         ...(this.state.invitation || {}),
@@ -98,7 +100,8 @@ try {
       };
       this.invalidateRouteCache();
       this.render();
-      showToast('Invitación generada. Copia y comparte el código en privado.', 'success');
+      feedback.success('La invitación se generó correctamente. Copia y comparte el código en privado.');
+      } catch (error) { feedback.error(error.message || 'No se pudo generar la invitación.'); error.actionFeedbackShown = true; throw error; }
       break;
     }
     case 'revoke-invitation': {
@@ -109,11 +112,14 @@ try {
         confirmLabel: 'Revocar código', cancelLabel: 'Conservar invitación'
       });
       if (!approved) break;
+      const feedback = beginActionToast('Revocando el código de invitación…');
+      try {
       await this.session.api.auth('invitation:revoke');
       this.state.invitation = { ...(this.state.invitation || {}), pending: false, canCreate: true, expiresAt: null, revealedCode: '' };
       this.invalidateRouteCache();
       this.render();
-      showToast('La invitación fue revocada.', 'success');
+      feedback.success('La invitación fue revocada.');
+      } catch (error) { feedback.error(error.message || 'No se pudo revocar la invitación.'); error.actionFeedbackShown = true; throw error; }
       break;
     }
     case 'copy-invitation': {
@@ -139,22 +145,34 @@ try {
     }
     case 'retry-route': await this.openRoute(this.state.route, false); break;
     case 'retry-letter': await this.openLetter(this.state.selectedLetter?.letter?.id, false, this.state.selectedLetter?.letter); break;
-    case 'back-to-list': await this.openRoute(this.previousListRoute, true, { focus: true }); break;
-    case 'cancel-editor': await this.openRoute(this.previousListRoute || 'drafts', true, { focus: true }); break;
+    case 'back-to-list': await this.navigateBack(this.previousListRoute || 'inbox'); break;
+    case 'cancel-editor': await this.navigateBack(this.previousListRoute || 'drafts'); break;
     case 'save-draft': {
-      const isReply = Boolean(this.state.editor?.parentLetterId);
       const result = await this.saveDraft(false);
-      if (!isReply && ['saved', 'created', 'local'].includes(result?.status)) {
-        await this.openRoute('drafts', true, { focus: true });
+      if (['saved', 'created', 'local'].includes(result?.status)) {
+        await this.openRoute('drafts', true, { focus: true, skipHistory: true });
       }
       break;
     }
     case 'preview-send': await this.previewSend(); break;
+    case 'save-sent-edits': await this.saveSentLetterEdits(); break;
     case 'preview-send-draft': await this.openLetterForSend(actionTarget.dataset.letterId); break;
     case 'confirm-send': await this.confirmSend(); break;
     case 'dismiss-modal': this.closeModal(); break;
     case 'edit-draft': await this.editDraft(actionTarget.dataset.letterId); break;
     case 'edit-local-draft': await this.editLocalDraft(actionTarget.dataset.localDraftKey); break;
+    case 'discard-local-draft': await this.discardLocalDraft(actionTarget.dataset.localDraftKey, actionTarget.dataset.letterId || ''); break;
+    case 'delete-all-trash': {
+      const approved = await showConfirmDialog({
+        tone: 'danger', title: 'Eliminar todo de la Papelera',
+        message: 'Se procesarán todas las cartas y respuestas que están actualmente en tu Papelera, incluidas las que todavía no has revisado en páginas posteriores.',
+        detail: 'Las cartas y respuestas creadas por ti se eliminarán definitivamente para ambas personas. En los mensajes creados por la otra persona se registrará tu confirmación; el contenido compartido solo se eliminará cuando también se confirme desde la otra cuenta. Los borradores que siguen en Borradores no se modificarán.',
+        confirmLabel: 'Eliminar todo', cancelLabel: 'Conservar Papelera'
+      });
+      if (approved) await this.deleteAllTrash();
+      break;
+    }
+    case 'edit-sent-letter': await this.startEditSentLetter(actionTarget.dataset.letterId); break;
     case 'choose-letter-image': {
       const editor = this.root.querySelector('#letter-editor');
       const selection = window.getSelection();
@@ -180,13 +198,16 @@ try {
       const next = !Boolean(source.isFavorite);
       this.patchLetterState(letterId, { isFavorite: next }, { removeFromList: this.state.route === 'favorites' && !next });
       this.renderCurrentRoute();
+      const feedback = beginActionToast(next ? 'Añadiendo la carta a Favoritos…' : 'Quitando la carta de Favoritos…');
       try {
         const result = await this.repository.setFavorite(letterId, next);
         if (result?.status !== 'updated') throw new Error('No se pudo actualizar el favorito. La carta puede estar en Papelera o ya no estar disponible.');
         this.invalidateRouteCache();
-        showToast(next ? 'Añadida a Favoritos.' : 'Quitada de Favoritos.', 'success');
+        feedback.success(next ? 'La carta se añadió a Favoritos.' : 'La carta se quitó de Favoritos.');
       } catch (error) {
         this.restoreLetterState(before);
+        feedback.error(error.message || 'No se pudo actualizar Favoritos.');
+        error.actionFeedbackShown = true;
         throw error;
       }
       break;
@@ -203,13 +224,16 @@ try {
         || (this.state.route === 'archive' && !next);
       this.patchLetterState(letterId, { isArchived: next }, { removeFromList });
       this.renderCurrentRoute();
+      const feedback = beginActionToast(next ? 'Guardando la carta en Archivo…' : 'Retirando la carta de Archivo…');
       try {
         const result = await this.repository.setArchive(letterId, next);
         if (result?.status !== 'updated') throw new Error('No se pudo actualizar el Archivo. La carta puede estar en Papelera o ya no estar disponible.');
         this.invalidateRouteCache();
-        showToast(next ? 'Carta guardada en Archivo.' : 'Carta retirada del Archivo.', 'success');
+        feedback.success(next ? 'La carta se guardó en Archivo.' : 'La carta se retiró de Archivo.');
       } catch (error) {
         this.restoreLetterState(before);
+        feedback.error(error.message || 'No se pudo actualizar Archivo.');
+        error.actionFeedbackShown = true;
         throw error;
       }
       break;
@@ -218,20 +242,28 @@ try {
       const letterId = actionTarget.dataset.letterId;
       const currentItem = this.state.letters.find(item => item.id === letterId);
       const selectedItem = this.state.selectedLetter?.letter?.id === letterId ? this.state.selectedLetter.letter : null;
-      const isDraft = actionTarget.dataset.letterStatus === 'draft' || currentItem?.status === 'draft' || selectedItem?.status === 'draft';
-      // Descartar un borrador es reversible desde Papelera: no requiere una
-      // segunda pulsación de confirmación. Para cartas compartidas sí se confirma.
+      const source = currentItem || selectedItem || this.state.selectedLetter?.thread?.find(item => String(item.id) === String(letterId));
+      const isDraft = actionTarget.dataset.letterStatus === 'draft' || source?.status === 'draft';
+      const withdrawToDraft = !isDraft && source?.status === 'sent'
+        && String(source.sender_id) === String(this.session?.user?.id) && !source.isInTrash;
+      // El autor retira su propia creación y la recupera como borrador; para
+      // el destinatario, descartar solo afecta a su carpeta personal.
       if (!isDraft && !(await showConfirmDialog({
-        tone: 'warning', title: 'Mover carta a Papelera',
-        message: 'La carta dejará de aparecer en tus carpetas habituales.',
-        detail: 'Podrás recuperarla desde Papelera mientras no se elimine definitivamente.',
-        confirmLabel: 'Mover a Papelera', cancelLabel: 'Cancelar', icon: '⌑'
+        tone: 'warning', title: withdrawToDraft ? 'Retirar a Borradores' : 'Mover carta a Papelera',
+        message: withdrawToDraft
+          ? 'La carta o respuesta dejará de formar parte de la conversación compartida.'
+          : 'La carta dejará de aparecer en tus carpetas habituales.',
+        detail: withdrawToDraft
+          ? 'La otra persona ya no podrá verla. Podrás editarla y enviarla de nuevo desde Borradores.'
+          : 'Podrás recuperarla desde Papelera mientras no se elimine definitivamente.',
+        confirmLabel: withdrawToDraft ? 'Retirar a Borradores' : 'Mover a Papelera',
+        cancelLabel: 'Cancelar', icon: '⌑'
       }))) break;
       await this.discardLetter(letterId, isDraft);
       break;
     }
     case 'restore-letter': {
-      const letterId = String(actionTarget.dataset.letterId || '');
+      if (this._bulkPurgingTrash) break;
       const before = this.snapshotLetterState();
       this.state.letters = (this.state.letters || []).filter(item => String(item.id) !== letterId);
       if (this.state.selectedLetter?.letter?.id === letterId) this.state.selectedLetter = null;
@@ -240,29 +272,40 @@ try {
         history.replaceState(null, '', `#/${this.state.route}`);
       }
       this.renderCurrentRoute();
+      const feedback = beginActionToast('Recuperando la carta…');
       try {
         const restored = await this.repository.restore(letterId);
         if (restored.status !== 'restored') throw new Error('No se pudo recuperar la carta. Actualiza la lista e inténtalo de nuevo.');
         this.discardedDraftIds.delete(letterId);
         this.invalidateRouteCache();
-        showToast('Carta recuperada.', 'success');
+        feedback.success('La carta se recuperó correctamente.');
       } catch (error) {
         this.restoreLetterState(before);
+        feedback.error(error.message || 'No se pudo recuperar la carta.');
+        error.actionFeedbackShown = true;
         throw error;
       }
       break;
     }
     case 'purge-letter': {
+      if (this._bulkPurgingTrash) break;
+      const letterId = String(actionTarget.dataset.letterId || '');
+      const purgeSource = this.state.letters.find(item => String(item.id) === letterId)
+        || this.state.selectedLetter?.thread?.find(item => String(item.id) === letterId)
+        || (String(this.state.selectedLetter?.letter?.id || '') === letterId ? this.state.selectedLetter.letter : null);
+      const ownerPurge = Boolean(purgeSource && String(purgeSource.sender_id) === String(this.session?.user?.id));
       const approved = await showConfirmDialog({
         tone: 'danger', title: 'Eliminar definitivamente',
         message: 'Esta acción no se puede deshacer cuando el proceso de eliminación se complete.',
-        detail: 'En una carta compartida, tu confirmación queda registrada y la eliminación del contenido solo se completa cuando ambas personas la confirman.',
+        detail: ownerPurge
+          ? 'Como creador, puedes eliminar tu carta o respuesta sin autorización de la otra persona. Dejará de estar disponible para ambos.'
+          : 'En una carta compartida, tu confirmación queda registrada y la eliminación del contenido solo se completa cuando ambas personas la confirman.',
         confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Mantener en Papelera'
       });
       if (!approved) break;
-      const letterId = String(actionTarget.dataset.letterId || '');
       const before = this.snapshotLetterState();
       const optimisticAt = new Date().toISOString();
+      const feedback = beginActionToast('Registrando la confirmación de eliminación…');
       // El botón cambia a estado de proceso mientras llega la respuesta,
       // pero no afirmamos que la confirmación quedó guardada antes del ACK.
       this.renderCurrentRoute();
@@ -270,9 +313,9 @@ try {
         const result = await this.repository.purge(letterId);
         if (result.status === 'pending_other_participant' || result.status === 'already_confirmed_waiting') {
           this.patchLetterState(letterId, { purgeConfirmedAt: optimisticAt });
-          showToast(result.status === 'pending_other_participant'
+          feedback.info(result.status === 'pending_other_participant'
             ? 'Tu confirmación quedó guardada. La carta seguirá en Papelera hasta que la otra persona confirme.'
-            : 'Ya habías confirmado. Solo falta que la otra persona confirme.', 'info', { duration: 6500 });
+            : 'Ya habías confirmado. Solo falta que la otra persona confirme.', { duration: 6500 });
         } else if (result.status === 'purged' || result.status === 'already_purged') {
           this.state.letters = (this.state.letters || []).filter(item => String(item.id) !== letterId);
           if (this.state.selectedLetter?.letter?.id === letterId) this.state.selectedLetter = null;
@@ -280,7 +323,7 @@ try {
             this.state.route = 'trash';
             history.replaceState(null, '', '#/trash');
           }
-          showToast('El contenido se eliminó para ambas personas.', 'success');
+          feedback.success(ownerPurge ? 'Tu carta o respuesta se eliminó definitivamente y ya no está disponible para la otra persona.' : 'El contenido se eliminó para ambas personas.');
         } else {
           throw new Error(result.status === 'not_in_trash'
             ? 'Primero mueve la carta a Papelera para eliminarla definitivamente.'
@@ -290,13 +333,13 @@ try {
         this.renderCurrentRoute();
       } catch (error) {
         this.restoreLetterState(before);
+        feedback.error(error.message || 'No se pudo confirmar la eliminación.');
+        error.actionFeedbackShown = true;
         throw error;
       }
       break;
     }
-    case 'download-txt': await this.downloadTxt(actionTarget.dataset.letterId); break;
-    case 'download-html': await this.downloadHtml(actionTarget.dataset.letterId); break;
-    case 'print-letter': window.print(); break;
+    case 'print-letter': await this.saveLetterAsPdf(); break;
     case 'read-notification': await this.repository.markNotificationRead(actionTarget.dataset.notificationId); this.invalidateRouteCache(); await this.openRoute('notifications', false); break;
     case 'revoke-other-sessions': {
       const otherCount = (this.state.sessions || []).filter(item => !item.isCurrent).length;
@@ -309,6 +352,7 @@ try {
         confirmLabel: 'Revocar las demás', cancelLabel: 'Conservar sesiones', icon: '⌑'
       });
       if (!approved) break;
+      const feedback = beginActionToast('Revocando las demás sesiones…');
 
       // Mantiene estable el anclaje visual incluso cuando la lista se acorta
       // estando la persona cerca del final de la página.
@@ -344,7 +388,7 @@ try {
         this.sessionChannel?.postMessage({ type: 'sessions-revoked-except-current', currentSessionId: this.session.sessionId });
         this.invalidateRouteCache();
         restoreScroll();
-        showToast(`Se revocaron ${Number(result.revokedCount || 0)} sesiones. Este dispositivo sigue conectado.`, 'success');
+        feedback.success(`Se revocaron ${Number(result.revokedCount || 0)} sesiones. Este dispositivo sigue conectado.`);
       } catch (error) {
         this.state.sessions = originalSessions;
         if (sessionList && originalListMarkup !== null) sessionList.innerHTML = originalListMarkup;
@@ -352,10 +396,12 @@ try {
         actionTarget.disabled = originalButtonDisabled;
         actionTarget.removeAttribute('aria-busy');
         restoreScroll();
-        if (error.code === 'UNKNOWN_ACTION') {
-          throw new Error('La función letters-api de Supabase no está actualizada. Publica la versión incluida en este proyecto y vuelve a intentarlo.');
-        }
-        throw error;
+        const displayedError = error.code === 'UNKNOWN_ACTION'
+          ? new Error('La función letters-api de Supabase no está actualizada. Publica la versión incluida en este proyecto y vuelve a intentarlo.')
+          : error;
+        feedback.error(displayedError.message || 'No se pudieron revocar las sesiones.');
+        displayedError.actionFeedbackShown = true;
+        throw displayedError;
       }
       break;
     }
@@ -368,17 +414,24 @@ try {
       });
       if (!approved) break;
       const sessionId = actionTarget.dataset.sessionId;
-      await this.repository.revokeSession(sessionId);
-      this.state.sessions = (this.state.sessions || []).filter(item => item.id !== sessionId);
-      this.sessionChannel?.postMessage({ type: 'session-revoked', sessionId });
-      this.render();
-      showToast('Sesión revocada.', 'success');
-      await this.refreshSessions();
+      const feedback = beginActionToast('Revocando la sesión seleccionada…');
+      try {
+        await this.repository.revokeSession(sessionId);
+        this.state.sessions = (this.state.sessions || []).filter(item => item.id !== sessionId);
+        this.sessionChannel?.postMessage({ type: 'session-revoked', sessionId });
+        this.render();
+        await this.refreshSessions();
+        feedback.success('La sesión seleccionada fue revocada.');
+      } catch (error) {
+        feedback.error(error.message || 'No se pudo revocar la sesión.');
+        error.actionFeedbackShown = true;
+        throw error;
+      }
       break;
     }
   }
 } catch (error) {
-  showToast(error.message || 'La operación no se pudo completar.', 'error');
+  if (!error?.actionFeedbackShown) showToast(error.message || 'La operación no se pudo completar.', 'error');
   if (error.status === 401) this.forceLogout();
 } finally {
   if (guardedLetterId) {

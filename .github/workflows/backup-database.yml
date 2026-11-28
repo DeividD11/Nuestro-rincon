@@ -14,13 +14,14 @@ concurrency:
 
 jobs:
   backup:
-    name: Export, encrypt and upload public database
+    name: Export, encrypt and upload database plus private Storage
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: database-backups
     env:
       NR_BACKUP_PROJECT_REF: ${{ vars.NR_BACKUP_PROJECT_REF }}
       NR_BACKUP_DATABASE_URL: ${{ secrets.NR_BACKUP_DATABASE_URL }}
+      NR_BACKUP_STORAGE_SERVICE_KEY: ${{ secrets.NR_BACKUP_STORAGE_SERVICE_KEY }}
       NR_BACKUP_AGE_RECIPIENT: ${{ vars.NR_BACKUP_AGE_RECIPIENT }}
       NR_BACKUP_S3_ENDPOINT: ${{ secrets.NR_BACKUP_S3_ENDPOINT }}
       NR_BACKUP_S3_BUCKET: ${{ vars.NR_BACKUP_S3_BUCKET }}

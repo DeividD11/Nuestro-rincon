@@ -295,5 +295,12 @@ export async function privateObjectExists(path: string): Promise<boolean> {
 }
 
 export async function deletePrivateObject(path: string): Promise<void> {
-  await storageRequest(`object/${BUCKET}/${encodePath(path)}`, { method: 'DELETE' });
+  try {
+    await storageRequest(`object/${BUCKET}/${encodePath(path)}`, { method: 'DELETE' });
+  } catch (error) {
+    // La cola de limpieza es idempotente: un 404 significa que el objeto ya no existe.
+    if (error instanceof Error && error.message === 'MEDIA_STORAGE_HTTP_404') return;
+    throw error;
+  }
 }
+

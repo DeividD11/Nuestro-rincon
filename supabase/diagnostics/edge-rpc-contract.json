@@ -1,0 +1,166 @@
+{
+  "format": "nuestro-rincon-edge-rpc-contract",
+  "version": 1,
+  "source": "supabase/functions/auth-api and supabase/functions/letters-api",
+  "principles": {
+    "securityDefiner": false,
+    "anonExecute": false,
+    "authenticatedExecute": false,
+    "serviceRoleExecute": true,
+    "searchPath": "pg_catalog, public"
+  },
+  "functions": [
+    {
+      "name": "change_app_password",
+      "arguments": "p_user_id uuid, p_current_session_id uuid, p_new_password_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "check_app_registration_invite",
+      "arguments": "p_token_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "claim_app_push_delivery",
+      "arguments": "p_notification_id uuid, p_subscription_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "claim_private_media_cleanup_jobs",
+      "arguments": "p_limit integer, p_now timestamp with time zone"
+    },
+    {
+      "name": "complete_app_login_attempt",
+      "arguments": "p_attempt_id uuid, p_success boolean, p_now timestamp with time zone"
+    },
+    {
+      "name": "complete_app_registration_invite_attempt",
+      "arguments": "p_attempt_id uuid, p_outcome text, p_reason text, p_user_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "confirm_letter_permanent_deletion",
+      "arguments": "p_user_id uuid, p_letter_id uuid"
+    },
+    {
+      "name": "consume_app_api_rate_limit",
+      "arguments": "p_user_id uuid, p_session_id uuid, p_action_group text, p_now timestamp with time zone"
+    },
+    {
+      "name": "consume_app_recovery_code",
+      "arguments": "p_username_normalized text, p_code_hash text, p_new_password_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "create_app_registration_invite",
+      "arguments": "p_inviter_user_id uuid, p_token_hash text, p_expires_at timestamp with time zone, p_now timestamp with time zone"
+    },
+    {
+      "name": "create_app_session_with_refresh",
+      "arguments": "p_session_id uuid, p_user_id uuid, p_idle_expires_at timestamp with time zone, p_absolute_expires_at timestamp with time zone, p_refresh_token_hash text, p_user_agent text, p_device_label text, p_now timestamp with time zone"
+    },
+    {
+      "name": "create_letter_draft",
+      "arguments": "p_sender_id uuid, p_creation_request_id uuid, p_title text, p_body text"
+    },
+    {
+      "name": "create_letter_reply",
+      "arguments": "p_actor_id uuid, p_parent_letter_id uuid, p_creation_request_id uuid, p_title text, p_body text"
+    },
+    {
+      "name": "delete_app_account",
+      "arguments": "p_user_id uuid, p_current_session_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "edit_sent_letter_content",
+      "arguments": "p_sender_id uuid, p_letter_id uuid, p_title text, p_body text, p_expected_revision integer"
+    },
+    {
+      "name": "finish_private_media_cleanup_job",
+      "arguments": "p_job_id uuid, p_success boolean, p_error_code text, p_now timestamp with time zone"
+    },
+    {
+      "name": "get_app_registration_invitation_status",
+      "arguments": "p_user_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "list_user_letters",
+      "arguments": "p_user_id uuid, p_folder text, p_search text, p_offset integer, p_limit integer"
+    },
+    {
+      "name": "list_user_letters_cursor",
+      "arguments": "p_user_id uuid, p_folder text, p_search text, p_cursor_sort_at timestamp with time zone, p_cursor_id uuid, p_limit integer"
+    },
+    {
+      "name": "mark_thread_letters_read",
+      "arguments": "p_user_id uuid, p_thread_id uuid"
+    },
+    {
+      "name": "move_letter_to_trash",
+      "arguments": "p_user_id uuid, p_letter_id uuid"
+    },
+    {
+      "name": "register_app_user_with_invite_idempotent",
+      "arguments": "p_request_hash text, p_invitation_hash text, p_display_name text, p_username text, p_password_hash text, p_recovery_code_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "register_app_user_with_invite_idempotent_bundle",
+      "arguments": "p_request_hash text, p_invitation_hash text, p_display_name text, p_username text, p_password_hash text, p_bundle_hash text, p_code_hashes jsonb, p_now timestamp with time zone"
+    },
+    {
+      "name": "rename_app_profile",
+      "arguments": "p_user_id uuid, p_display_name text, p_now timestamp with time zone"
+    },
+    {
+      "name": "restore_letter_from_trash",
+      "arguments": "p_user_id uuid, p_letter_id uuid"
+    },
+    {
+      "name": "revoke_app_registration_invite",
+      "arguments": "p_inviter_user_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "revoke_other_app_sessions",
+      "arguments": "p_user_id uuid, p_current_session_id uuid, p_now timestamp with time zone"
+    },
+    {
+      "name": "rotate_app_recovery_code",
+      "arguments": "p_user_id uuid, p_session_id uuid, p_request_hash text, p_recovery_code_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "rotate_app_recovery_codes_bundle",
+      "arguments": "p_user_id uuid, p_session_id uuid, p_request_hash text, p_bundle_hash text, p_code_hashes jsonb, p_now timestamp with time zone"
+    },
+    {
+      "name": "rotate_app_refresh_token",
+      "arguments": "p_token_hash text, p_new_token_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "save_letter_draft",
+      "arguments": "p_sender_id uuid, p_letter_id uuid, p_title text, p_body text, p_expected_revision integer"
+    },
+    {
+      "name": "send_letter_draft",
+      "arguments": "p_sender_id uuid, p_letter_id uuid, p_expected_revision integer"
+    },
+    {
+      "name": "set_letter_archive_state",
+      "arguments": "p_user_id uuid, p_letter_id uuid, p_archived boolean"
+    },
+    {
+      "name": "set_letter_favorite_state",
+      "arguments": "p_user_id uuid, p_letter_id uuid, p_favorite boolean"
+    },
+    {
+      "name": "start_app_auth_attempt",
+      "arguments": "p_identifier_hash text, p_ip_digest text, p_action text, p_now timestamp with time zone"
+    },
+    {
+      "name": "start_app_registration_invite_attempt",
+      "arguments": "p_ip_hash text, p_token_hash text, p_now timestamp with time zone"
+    },
+    {
+      "name": "upsert_app_push_subscription",
+      "arguments": "p_user_id uuid, p_session_id uuid, p_endpoint_hash text, p_endpoint text, p_p256dh text, p_auth text, p_user_agent text, p_now timestamp with time zone"
+    },
+    {
+      "name": "withdraw_sent_letter_to_draft",
+      "arguments": "p_user_id uuid, p_letter_id uuid"
+    }
+  ]
+}

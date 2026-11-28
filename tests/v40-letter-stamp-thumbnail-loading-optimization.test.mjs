@@ -4,14 +4,16 @@ import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('letter-stamp usa un placeholder animado como avatar-preview y no bloquea la lista con imágenes grandes', async () => {
+test('letter-stamp usa un placeholder estático y no bloquea la lista con imágenes grandes', async () => {
   const view = await read('../assets/js/views/correspondence-view.js');
   const css = await read('../assets/css/correspondence.css');
   assert.match(view, /letter-stamp-fallback-mark/);
   assert.match(view, /width="96" height="96" loading="lazy" decoding="async" fetchpriority="low"/);
   assert.match(css, /\.letter-stamp\.has-image\.is-loading \.letter-stamp-fallback::before/);
-  assert.match(css, /avatar-preview-shimmer 1\.25s ease-in-out infinite/);
-  assert.match(css, /letter-stamp-spin \.8s linear infinite/);
+  const finalOverrides = css.slice(css.lastIndexOf('v49: imágenes estáticas'));
+  assert.match(finalOverrides, /animation: none !important/);
+  assert.match(finalOverrides, /transition: none !important/);
+  assert.doesNotMatch(finalOverrides, /letter-stamp-spin|avatar-preview-shimmer/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
 });
 

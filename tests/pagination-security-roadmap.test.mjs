@@ -14,7 +14,7 @@ test('el borrado compartido deja de depender de la confirmación de una cuenta d
   assert.match(migration, /select public\.purge_shared_letters_without_active_confirmation\(null\)/);
   assert.match(migration, /v_confirmed_count < v_active_count/);
   const pgTap = await read('../supabase/tests/shared_letter_purge.test.sql');
-  assert.match(pgTap, /plan\(14\)/);
+  assert.match(pgTap, /plan\(20\)/);
   assert.match(pgTap, /delete from public\.letter_user_state[\s\S]*update public\.app_users set status = 'disabled'/);
   assert.match(pgTap, /la confirmación pendiente no deja la carta bloqueada/);
 });

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
   'index.html', '404.html', '.nojekyll', 'manifest.webmanifest', 'service-worker.js',
-  'assets/css/app.css', 'assets/css/app-components.css', 'assets/css/app-auth.css', 'assets/css/editor.css', 'assets/css/dialogs.css', 'assets/css/security-panels.css', 'assets/css/correspondence.css', 'assets/css/accessibility.css', 'assets/css/recovery.css', 'assets/icons/mark.svg',
+  'assets/css/app.css', 'assets/css/app-components.css', 'assets/css/app-auth.css', 'assets/css/editor.css', 'assets/css/dialogs.css', 'assets/css/security-panels.css', 'assets/css/correspondence.css', 'assets/css/accessibility.css', 'assets/css/recovery.css', 'assets/css/theme-transition.css', 'assets/icons/mark.svg',
   'assets/js/app.js', 'assets/js/config/app-config.js',
   'assets/js/models/app-state.js', 'assets/js/views/app-view.js', 'assets/js/views/auth-view.js', 'assets/js/views/correspondence-view.js', 'assets/js/views/settings-view.js',
   'assets/js/controllers/app-controller.js', 'assets/js/controllers/app-submit-handler.js', 'assets/js/controllers/app-click-handler.js', 'assets/js/controllers/app-initialization-controller.js', 'assets/js/controllers/app-event-coordinator-controller.js', 'assets/js/controllers/session-lifecycle-controller.js',
@@ -23,8 +23,8 @@ const required = [
   'assets/js/services/recovery-vault.js',
   'assets/js/services/draft-sync-queue.js', 'assets/js/services/draft-sync-service.js', 'assets/js/services/draft-persistence-service.js', 'assets/js/services/adaptive-poller.js', 'assets/js/utils/dom.js',
   'tests/helpers/controller-source.mjs', 'tests/controller-modularization.test.mjs', 'tests/e2e/accessibility.spec.mjs', 'tests/ci-hardening.test.mjs', 'tests/search-optimization.test.mjs',
-  'tests/accessibility-release.test.mjs', 'tests/backup-account-recovery.test.mjs', 'tests/package-distribution.test.mjs', 'tests/documentation-integrity.test.mjs', 'scripts/package-zip.mjs', 'tools/contrast-audit.mjs', 'package-lock.json', '.nvmrc',
-  'scripts/backup/create-backup.sh', 'scripts/backup/restore-to-isolated.sh', 'scripts/run-db-tests.mjs',
+  'tests/accessibility-release.test.mjs', 'tests/v47-synchronous-ui-theme.test.mjs', 'tests/backup-account-recovery.test.mjs', 'tests/package-distribution.test.mjs', 'tests/documentation-integrity.test.mjs', 'scripts/package-zip.mjs', 'tools/contrast-audit.mjs', 'package-lock.json', '.nvmrc',
+  'scripts/backup/create-backup.sh', 'scripts/backup/restore-to-isolated.sh', 'scripts/backup/restore-storage-only.sh', 'scripts/backup/storage-objects.mjs', 'scripts/run-db-tests.mjs',
   'docs/BACKUP_RESTORE.md', 'docs/ACCOUNT_RECOVERY.md',
   'docs/ACCESSIBILITY.md', 'docs/PUSH_NOTIFICATIONS_ROADMAP.md', 'docs/CI_RELEASE_POLICY.md', 'docs/PAGINATION.md', 'docs/CONTROLLER_ARCHITECTURE.md',
   '.github/dependabot.yml', 'tests/helpers/style-source.mjs',
@@ -52,15 +52,15 @@ const required = [
   'supabase/tests/cursor_pagination.test.sql', 'supabase/tests/api_rate_limits_and_push.test.sql',
   'supabase/tests/recovery_code_bundles.test.sql', 'supabase/tests/cursor_pagination.test.sql',
   'supabase/tests/auth_rate_limits.test.sql', 'supabase/tests/shared_letter_purge.test.sql',
-  'supabase/tests/profile_rename_transaction.test.sql', 'supabase/tests/search_semantics.test.sql',
-  'scripts/run-db-tests.mjs', 'tools/run-coverage.mjs', 'supabase/performance/search-trigram-candidate.sql', 'supabase/performance/search-benchmark.sql', 'supabase/tests/search_semantics.test.sql', 'docs/GITHUB_BRANCH_PROTECTION.md', 'docs/LETTER_SEARCH_PERFORMANCE.md', 'docs/LETTERS_CONSISTENCY.md', 'docs/E2EE_ARCHITECTURE.md', 'docs/CONTROLLER_ARCHITECTURE.md',
+  'supabase/tests/profile_rename_transaction.test.sql', 'supabase/tests/search_semantics.test.sql', 'supabase/tests/private_media_cleanup_queue.test.sql',
+  'supabase/diagnostics/edge-rpc-contract.json', 'supabase/migrations/20261125010000_private_media_cleanup_queue.sql', 'tests/audit-five-findings.test.mjs', 'tests/controller-critical-flows.test.mjs', 'tests/storage-backup-restore.test.mjs', 'tests/edge-rpc-contract.test.mjs', 'scripts/backup/storage-objects.mjs', 'scripts/backup/restore-storage-only.sh', 'scripts/run-db-tests.mjs', 'tools/run-coverage.mjs', 'supabase/performance/search-trigram-candidate.sql', 'supabase/performance/search-benchmark.sql', 'supabase/tests/search_semantics.test.sql', 'docs/GITHUB_BRANCH_PROTECTION.md', 'docs/LETTER_SEARCH_PERFORMANCE.md', 'docs/LETTERS_CONSISTENCY.md', 'docs/E2EE_ARCHITECTURE.md', 'docs/CONTROLLER_ARCHITECTURE.md',
   'assets/js/theme-boot.js',
   'docs/PAGINATION.md',
   'supabase/functions/_shared/core.ts', 'supabase/functions/_shared/core.test.ts', 'supabase/functions/auth-api/index.ts',
   'supabase/functions/letters-api/index.ts', 'supabase/functions/auth-api/deno.json', 'supabase/functions/letters-api/deno.json',
   'scripts/build-pages.mjs', 'docs/SECURITY.md', 'docs/REMOTE_BASELINE.md',
   'README.md', '.gitignore', '.github/workflows/pages.yml', '.github/workflows/security-playwright.yml',
-  '.github/workflows/backup-database.yml', '.github/workflows/export-schema.yml'
+  '.github/workflows/backup-database.yml', '.github/workflows/export-schema.yml', '.github/workflows/release-supabase-edge.yml'
 ];
 
 const failures = [];
@@ -171,7 +171,7 @@ if (!/new\.reply_to_letter_id is distinct from old\.reply_to_letter_id/.test(con
   || !/already_confirmed_waiting/.test(consistencyMigration)
   || !/pending_other_participant/.test(consistencyMigration)
   || !/purged/.test(sharedPurgeTest)
-  || !/plan\(14\)/.test(sharedPurgeTest)
+  || !/plan\(20\)/.test(sharedPurgeTest)
   || !/v_state\.trashed_at is not null[\s\S]*'status','discarded'/.test(consistencyMigration)
   || !/save_letter_draft\([\s\S]*'discarded'/.test(sharedPurgeTest)) {
   failures.push('La migración o prueba pgTAP de eliminación compartida está incompleta.');
@@ -251,22 +251,23 @@ if (cssPositions.some(position => position < 0) || cssPositions.some((position, 
 const accessibilityView = (await Promise.all(['app-view.js','auth-view.js','correspondence-view.js','settings-view.js'].map(name => readFile(join(root, 'assets/js/views', name), 'utf8')))).join('\n');
 const accessibilityController = await readFile(join(root, 'assets/js/controllers/app-event-coordinator-controller.js'), 'utf8');
 const accessibilityDom = await readFile(join(root, 'assets/js/utils/dom.js'), 'utf8');
+const accessibilityCss = await readFile(join(root, 'assets/css/accessibility.css'), 'utf8');
 if (/<div\s+id="app"[^>]*aria-live=/i.test(accessibilityHtml)
   || !/id="app-announcer"[^>]*role="status"[^>]*aria-live="polite"/.test(accessibilityHtml)
   || !/id="app-alert-announcer"[^>]*role="alert"[^>]*aria-live="assertive"/.test(accessibilityHtml)
   || !/toast\.setAttribute\('role', 'group'\)/.test(accessibilityDom)) {
   failures.push('Las regiones vivas deben ser pequeñas y estables, no envolver el árbol completo de la aplicación.');
 }
-if (!/class="skip-link" href="#main-content"/.test(accessibilityView)
+if (/skip-link|Saltar al contenido principal/i.test(accessibilityView)
   || !/id="main-content" tabindex="-1"/.test(accessibilityView)
   || !/id="page-heading" tabindex="-1"/.test(accessibilityView)
   || !/aria-current="page"/.test(accessibilityView)
   || !/toggleAttribute\('inert', hideSidebar\)/.test(accessibilityController)
   || !/toggleAttribute\('inert', hideMain\)/.test(accessibilityController)
-  || !/closeButton\?\.focus/.test(accessibilityController)) {
-  failures.push('Falta el enlace de salto, el foco de página o la gestión accesible del menú móvil.');
+  || !/closeButton\?\.focus/.test(accessibilityController)
+  || /skip-link|Saltar al contenido principal/i.test(accessibilityController + accessibilityCss)) {
+  failures.push('La vista debe omitir el enlace de salto y conservar el foco de página y la gestión accesible del menú móvil.');
 }
-const accessibilityCss = await readFile(join(root, 'assets/css/accessibility.css'), 'utf8');
 if (!/@media \(pointer: coarse\)[\s\S]*?min-height: 44px/.test(accessibilityCss)
   || !/@media \(prefers-reduced-motion: reduce\)/.test(accessibilityCss)) {
   failures.push('Los controles táctiles deben tener tamaño mínimo y respetar movimiento reducido.');
@@ -309,6 +310,34 @@ if (!/auth-api[^\n]{0,100}v11|auth-api[^\n]{0,100}versión 11/i.test(readme)
   || !/'.git'/.test(zipScript) || !/'node_modules'/.test(zipScript) || !/'_site'/.test(zipScript)
   || !/name === '.env'/.test(zipScript)) {
   failures.push('La documentación de versiones o las exclusiones del paquete ZIP no coinciden con el baseline.');
+}
+
+
+const cleanupMigration = await readFile(join(root, 'supabase/migrations/20261125010000_private_media_cleanup_queue.sql'), 'utf8');
+const edgeRpcContract = JSON.parse(await readFile(join(root, 'supabase/diagnostics/edge-rpc-contract.json'), 'utf8'));
+const storageBackup = await readFile(join(root, 'scripts/backup/storage-objects.mjs'), 'utf8');
+const storageOnlyRestore = await readFile(join(root, 'scripts/backup/restore-storage-only.sh'), 'utf8');
+const releaseWorkflow = await readFile(join(root, '.github/workflows/release-supabase-edge.yml'), 'utf8');
+const mainCsp = (await readFile(join(root, 'index.html'), 'utf8')).match(/Content-Security-Policy" content="([^"]+)"/)?.[1] || '';
+if (!mainCsp.includes('img-src \'self\' data: blob:') || /script-src[^;]*blob:/.test(mainCsp)) failures.push('La CSP debe permitir blob: solo en img-src, nunca en script-src.');
+if (!/private_media_cleanup_jobs/.test(cleanupMigration) || !/before update of body on public\.letters/.test(cleanupMigration)
+  || !/before delete on public\.letter_versions/.test(cleanupMigration) || !/for update skip locked/.test(cleanupMigration)
+  || !/not exists \([\s\S]*public\.letter_versions/.test(cleanupMigration)) {
+  failures.push('La cola de limpieza privada debe capturar cartas/versiones y comprobar referencias antes del borrado.');
+}
+if (edgeRpcContract.functions?.length !== 38 || !edgeRpcContract.functions.some(item => item.name === 'claim_private_media_cleanup_jobs')
+  || !edgeRpcContract.functions.some(item => item.name === 'finish_private_media_cleanup_job')) {
+  failures.push('El manifiesto RPC debe cubrir todas las operaciones usadas por las Edge Functions, incluida la limpieza de Storage.');
+}
+if (!/storage-manifest\.json/.test(backupScript) || !/storage-objects\.mjs" backup/.test(backupScript)
+  || !/NR_BACKUP_STORAGE_SERVICE_KEY/.test(backupWorkflow) || !/createHash\('sha256'\)/.test(storageBackup)
+  || !/RESTORE_STORAGE_COLLISION/.test(storageBackup) || !/NR_RESTORE_STORAGE_CONFIRM/.test(storageOnlyRestore)) {
+  failures.push('El respaldo v2 debe incluir bytes privados, hashes y un restore Storage-only aislado.');
+}
+if (!/workflow_dispatch/.test(releaseWorkflow) || !/confirm_production_release/.test(releaseWorkflow)
+  || !/supabase:reconcile:readonly/.test(releaseWorkflow) || !/functions deploy auth-api/.test(releaseWorkflow)
+  || !/functions deploy letters-api/.test(releaseWorkflow) || /db push|migration repair/i.test(releaseWorkflow)) {
+  failures.push('La publicación de Edge Functions debe ser manual, condicionada a reconciliación RPC y sin db push/repair.');
 }
 
 if (failures.length) {

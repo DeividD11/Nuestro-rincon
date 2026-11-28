@@ -1,5 +1,36 @@
+## Release v49 — retirada de mensajes, medios y PDF (aplicado el 27 de noviembre de 2026, Colombia)
+
+La migración `20261128030000_withdraw_sent_letters_and_owner_purge.sql` ya se aplicó al proyecto `tiqbmuubpbmxqvtkcdhq`; el ledger la registró como `20261128031503_withdraw_sent_letters_and_owner_purge`. No vuelvas a ejecutar el archivo local ni uses `supabase db push` como reconciliación masiva. `letters-api` **v13 ACTIVE** está desplegada, conserva `verify_jwt=false` porque valida las sesiones opacas internas y no requiere cambios en `auth-api` v11.
+
+Verificación posterior realizada: la RPC `withdraw_sent_letter_to_draft(uuid,uuid)` existe, solo `service_role` puede ejecutarla, y `anon`/`authenticated` no tienen `EXECUTE`; la Edge Function v13 incluye `letter:edit`, `media:sign-letter-thumbnail`, retiro del autor, upload/sign de imágenes para edición de mensajes propios y consumo acotado de la cola de cleanup. Los advisors de salud no devolvieron hallazgos; permanecen findings informativos de RLS sin policies para tablas que solo usa `service_role` y de índices aún no utilizados. Pendiente: ejecutar las pruebas de aceptación funcional con las dos cuentas reales y un test aislado de navegador/Storage; no se modificó ni purgó correspondencia real.
+
 # Runbook de reconciliación y publicación Supabase
 
+## Release local v48 — edición versionada de cartas/respuestas
+
+El inventario local contiene 30 archivos SQL locales y nueve propuestas sin una entrada homónima en el ledger; no deben aplicarse en bloque. La propuesta nueva de esta versión es `20261127090000_edit_sent_letter_content.sql`. El código local `letters-api` añade `letter:edit`, que llama a `edit_sent_letter_content`; ambos componentes son un único cambio de backend.
+
+Antes de cualquier publicación: (1) recuperar y restaurar una copia aislada de producción; (2) reconciliar en esa copia el trigger de inmutabilidad, la estructura de `letter_versions`, los grants y las firmas de la RPC; (3) aplicar solo la migración v48 en la base aislada y ejecutar pruebas de edición por el remitente, intento de edición por destinatario, estado purged/trashed, revisión obsoleta, snapshot histórico y validación de contenido; (4) revisar el diff real frente a producción; (5) aplicar la migración única y desplegar la nueva `letters-api` mediante el workflow de release aprobado. No publicar la Edge Function antes de que exista la RPC, ni ejecutar `supabase db push` o `db reset` en producción.
+
+Estado de esta entrega: migración incluida localmente y no aplicada; Edge Function modificada localmente y no desplegada.
+
+
+## Release v46: migración de limpieza, backup privado y contrato RPC
+
+Esta actualización añade una sola migración nueva: `supabase/migrations/20261125010000_private_media_cleanup_queue.sql`. No es seguro ejecutar todas las migraciones locales no registradas porque el ledger histórico ya contiene deriva. El procedimiento es deliberadamente de alcance único:
+
+1. Restaurar un backup completo reciente (versión 2 con `private-media`) en un proyecto Supabase aislado, no en producción.
+2. En el proyecto aislado aplicar **solo** `20261125010000_private_media_cleanup_queue.sql` después de verificar que `letters`, `letter_versions` y `app_users` existen. Ejecutar `npm run test:db` con `NR_TEST_CONFIRM_ISOLATED=YES`, `NR_DB_TEST_PROJECT_REF` y `NR_TEST_DATABASE_URL` apuntando exclusivamente a esa base desechable.
+3. Confirmar en el entorno aislado que los triggers encolan rutas al reemplazar/purgar contenido, que no se reclama un objeto mientras aparezca en otra versión, y que los trabajos fallidos se reintentan al siguiente guardado/purga o mediante `media:cleanup-pending`. Comprobar también `anon` y `authenticated` sin permisos y `service_role` con permisos.
+4. Tras aprobación explícita y backup reciente, aplicar esa migración única en producción usando el mismo archivo exacto. No ejecutar `db push`, `db reset` ni migraciones históricas pendientes. Mantener el bucket privado y borrar objetos únicamente mediante Storage API.
+5. En GitHub configura el Environment `supabase-production` con aprobadores y los secretos/variables `NR_SUPABASE_ACCESS_TOKEN`, `NR_SUPABASE_PROJECT_REF`, `NR_RECONCILE_PROJECT_REF` y `NR_RECONCILE_DATABASE_URL`. Abre **Actions → Release Nuestro Rincón Edge Functions (manual)** y selecciona `YES` solo después de aplicar la migración. El workflow ejecuta pruebas, Deno, cobertura y el diagnóstico SQL de solo lectura; solo publica `auth-api` y `letters-api` si todas las RPC del manifiesto cumplen firma, SECURITY INVOKER, `search_path` y grants. Conserva `verify_jwt=false` porque el backend valida las sesiones opacas propias.
+6. Verifica `supabase functions list`, versión ACTIVE de ambas funciones y prueba con dos cuentas: adjuntar dos imágenes, enviar la carta, leer como destinatario, purgar desde cada participante y comprobar que los objetos se eliminan solo cuando ninguna carta/versión los referencia.
+
+El workflow de release no aplica SQL y no ejecuta migraciones ni `migration repair`: eso evita que el despliegue de código pueda modificar el esquema implícitamente. Si la comprobación de reconciliación bloquea el release, inspecciona el informe `supabase:reconcile:readonly`; no marques migraciones históricas como aplicadas solo para que desaparezcan los avisos.
+
+### Backup y restauración de medios
+
+El backup v2 requiere `NR_BACKUP_STORAGE_SERVICE_KEY` como secreto del Environment `database-backups`. Es una credencial privilegiada; nunca debe guardarse en el frontend, en el repositorio ni en `.env` versionado. Completa una ejecución manual y comprueba que `storage-manifest.json` y `storage/objects/` aparecen dentro del backup cifrado. Luego restaura en un proyecto aislado y ejecuta pgTAP/integración con dos cuentas. La restauración de Storage es posterior a PostgreSQL y puede repetirse de forma independiente con `npm run restore:storage`; las colisiones con bytes diferentes detienen la operación sin sobrescribir.
 
 ## Estado remoto v35 — comprobado el 24 de noviembre de 2026
 
@@ -8,7 +39,7 @@
 | Proyecto Supabase | `ACTIVE_HEALTHY`, PostgreSQL 17, región `us-west-2` |
 | Edge Functions | `auth-api` v11 ACTIVE; `letters-api` v11 ACTIVE |
 | Historial remoto | 25 migraciones |
-| Inventario local | 28 archivos SQL locales: 17 timestamps comunes, tres legacy/no canónicos y ocho propuestas sin entrada homónima |
+| Inventario local | 30 archivos SQL locales: 17 timestamps comunes, tres legacy/no canónicos, ocho propuestas históricas y dos migraciones específicas pendientes (limpieza y edición versionada) |
 | Avatar | `public.user_profiles.avatar_path` y su constraint existen remotamente |
 | Revocación global | `revoke_other_app_sessions` aplicado; ejecutable solo por `service_role`, SECURITY INVOKER |
 | Rendimiento de revocación | Índice `push_subscriptions_session_id_idx` creado; operación encapsulada en una sola transacción SQL |

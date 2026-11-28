@@ -128,7 +128,7 @@ test('la vinculación inicial de destinatario está permitida una sola vez y no 
   assert.match(migration, /LETTER_IDENTITY_IMMUTABLE/);
 });
 
-test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto coherente', async () => {
+test('el diseño cubre los siete anchos requeridos y no renderiza el enlace de salto eliminado', async () => {
   const css = await readCssBundle();
   const html = await read('../index.html');
   const appView = await readAppViewSource();
@@ -142,8 +142,8 @@ test('el diseño cubre los siete anchos requeridos y ofrece un enlace de salto c
     { width: 2560, rule: /@media \(min-width: 2200px\)/ }
   ];
   for (const item of widths) assert.match(css, item.rule, `Falta una regla para ${item.width}px`);
-  assert.match(appView, /class="skip-link" href="#main-content"/);
-  assert.match(css, /\.skip-link:focus/);
+  assert.doesNotMatch(appView, /skip-link|Saltar al contenido principal/i);
+  assert.doesNotMatch(css, /skip-link|Saltar al contenido principal/i);
 });
 
 
@@ -184,7 +184,10 @@ test('la copia local se actualiza en cada pulsación y se hidrata sin bloquear l
   assert.match(controller, /this\.persistLocalDraft\(\)\.catch\(\(\) => \{\}\)/);
   assert.match(controller, /hydrateEditorFromLocal\(/);
   assert.match(controller, /readEmergencyDraft\(draftKey\)/);
-  assert.match(controller, /No retrasar el cambio de sección esperando IndexedDB/);
+  const navigation = await read('../assets/js/controllers/navigation-controller.js');
+  const routeChange = navigation.slice(navigation.indexOf('async openRoute'), navigation.indexOf('async fetchRouteData'));
+  assert.match(routeChange, /putLocalDraft\(replySnapshot\)\.then/);
+  assert.doesNotMatch(routeChange, /await putLocalDraft/);
 });
 
 

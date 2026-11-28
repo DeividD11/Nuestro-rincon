@@ -63,8 +63,8 @@ test('al cargar preferencias no se vuelve a descargar el avatar con la misma rut
   assert.match(controller, /previousIdentity !== nextIdentity/);
   assert.match(controller, /syncAvatarFromProfile/);
   assert.match(navigation, /syncAvatarFromProfile/);
-  assert.match(controller, /warmedImage\.decode\(\)/);
-  assert.match(controller, /previewUrl\n\s*\};/);
+  assert.match(controller, /waitForAvatarImage\(imageNode\)|waitForAvatarImage\(image\)/);
+  assert.match(controller, /return \{ previewImage, sidebarImage \};/);
 });
 
 test('las URL firmadas de Storage se reutilizan con una caché LRU limitada y caducidad anticipada', async () => {

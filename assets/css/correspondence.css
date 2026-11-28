@@ -688,3 +688,68 @@ html[data-theme="dark"] .user-mini .avatar.has-image.is-loading::after {
     will-change: auto;
   }
 }
+
+/* Las vistas previas del hilo son breves y no sustituyen el contenido íntegro de la carta. */
+.conversation-item .conversation-preview-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;white-space:normal;overflow-wrap:anywhere;color:var(--text-soft,var(--muted));font-size:13px;line-height:1.65}
+.conversation-preview-media{display:inline-block;margin-top:6px;color:var(--muted);font:600 10px/1.4 var(--sans,Arial,sans-serif)}
+html[data-theme="dark"] .conversation-item .letter-body,
+html[data-theme="dark"] .conversation-item .letter-body :where(p,div,span,li,strong,b,em,i){color:#f0eae5!important;background-color:transparent}
+html[data-theme="dark"] .conversation-item .conversation-preview-media{color:#c5b8b0!important}
+
+html[data-theme="dark"] .conversation-list .letter-body,
+html[data-theme="dark"] .conversation-list .letter-body p,
+html[data-theme="dark"] .conversation-list .letter-body :where(div,span,li,strong,b,em,i){color:#f0eae5!important;background-color:transparent!important}
+
+
+/* v49: imágenes estáticas, sin shimmer, giro ni movimiento durante el scroll. */
+.letter-body .letter-image-frame,
+.letter-body .letter-image-frame img,
+.letter-stamp,
+.letter-stamp img,
+.letter-stamp .letter-stamp-fallback,
+.letter-stamp .letter-stamp-fallback-mark {
+  animation: none !important;
+  transition: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+.letter-body .letter-image-frame.is-loading::after,
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::before,
+.letter-stamp.has-image.is-loading .letter-stamp-fallback::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+  transform: none !important;
+}
+.letter-stamp.has-image.is-loading,
+.letter-stamp.has-image.is-loading .letter-stamp-fallback {
+  background: var(--surface-soft, #f2ece7) !important;
+  background-image: none !important;
+}
+.letter-stamp.has-image.is-loading .letter-stamp-fallback-mark {
+  display: grid !important;
+  opacity: .28 !important;
+}
+.letter-stamp.has-image img,
+.letter-body .letter-image-frame img {
+  animation: none !important;
+  transition: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+.letter-editor img.letter-editor-image {
+  animation: none !important;
+  transform: none !important;
+  transition: none !important;
+  filter: none !important;
+}
+.letter-body .letter-image-frame.is-loading {
+  background: var(--surface-soft, #f2ece7) !important;
+  background-image: none !important;
+}
+.letter-image-placeholder-icon,
+.letter-image-placeholder-label {
+  animation: none !important;
+  transform: none !important;
+}

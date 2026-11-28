@@ -44,7 +44,7 @@ function parsePushEndpoint(value: unknown): string {
 function actionRateGroup(action: string): 'letter_list' | 'read' | 'write' | 'security' {
   if (action === 'list') return 'letter_list';
   if (['dashboard', 'get', 'notifications', 'notification:read', 'settings:get', 'push:config', 'sessions'].includes(action)) return 'read';
-  if (['purge', 'session:revoke', 'sessions:revoke-others', 'media:prepare-upload', 'media:sign-letter-image', 'media:sign-letter-thumbnail', 'push:subscribe', 'push:unsubscribe', 'profile:avatar:set', 'profile:avatar:remove'].includes(action)) return 'security';
+  if (['purge', 'media:cleanup-pending', 'session:revoke', 'sessions:revoke-others', 'media:prepare-upload', 'media:sign-letter-image', 'media:sign-letter-thumbnail', 'push:subscribe', 'push:unsubscribe', 'profile:avatar:set', 'profile:avatar:remove'].includes(action)) return 'security';
   return 'write';
 }
 
@@ -371,6 +371,7 @@ async function fetchLetterListCursor(userId: string, folder: string, search: str
 }
 
 function stripTags(html: string) { return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '); }
+function plainTextLength(html: string) { return stripTags(html).replace(/\s+/g, ' ').trim().length; }
 
 const LETTER_MEDIA_PATH = /^letters\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f-]{36})\.(jpg|jpeg|png|webp)$/i;
 
@@ -380,12 +381,20 @@ function letterImagePaths(html: string): string[] {
   return [...html.matchAll(/<img\b[^>]*data-image-path="([^"]+)"[^>]*>/gi)].map(match => match[1]);
 }
 
-function validateLetterImages(html: string, baseLetterId: string, ownerId: string) {
+async function validateLetterImages(html: string, baseLetterId: string, ownerId: string) {
   const paths = letterImagePaths(html);
   if (paths.length > 6) throw new Error('LETTER_IMAGE_LIMIT');
   for (const path of paths) {
     const match = path.match(LETTER_MEDIA_PATH);
     if (!match || match[1] !== baseLetterId || match[2] !== ownerId) throw new Error('LETTER_IMAGE_PATH_INVALID');
+
+    // Un objeto que entró en la cola queda retirado de forma permanente:
+    // impedir reinsertar una ruta en curso evita la carrera entre el borrado
+    // en Storage y una actualización concurrente del contenido de la carta.
+    const cleanupJob = await selectOne<Record<string, unknown>>('private_media_cleanup_jobs', {
+      select: 'id,status', object_path: `eq.${path}`, status: 'in.(pending,processing,completed)', limit: '1'
+    });
+    if (cleanupJob || !(await privateObjectExists(path))) throw new Error('LETTER_IMAGE_PATH_INVALID');
   }
 }
 
@@ -490,6 +499,55 @@ async function getLetterBundle(letterId: string, userId: string, threadCursor: L
   return { letter, thread: decoratedWithMedia, threadHasMore, threadNextCursor, threadLoadedOlderCount };
 }
 
+type MediaCleanupJob = { id: string; object_path: string; attempts: number };
+
+async function processPendingPrivateMediaCleanup(limit = 8): Promise<{ processed: number; deleted: number; retries: number }> {
+  const jobs = await rpc<MediaCleanupJob[]>('claim_private_media_cleanup_jobs', {
+    p_limit: Math.max(1, Math.min(20, limit)),
+    p_now: nowIso()
+  });
+  if (!Array.isArray(jobs) || jobs.length === 0) return { processed: 0, deleted: 0, retries: 0 };
+
+  let deleted = 0;
+  let retries = 0;
+  for (const job of jobs) {
+    if (!job?.id || typeof job.object_path !== 'string'
+      || !/^letters\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(?:jpg|jpeg|png|webp)$/i.test(job.object_path)) {
+      // El path también está validado por el CHECK SQL; esta segunda barrera evita
+      // que un dato mal formado llegue a la API de Storage.
+      if (job?.id) {
+        try {
+          await rpc('finish_private_media_cleanup_job', {
+            p_job_id: job.id, p_success: false, p_error_code: 'MEDIA_CLEANUP_PATH_INVALID', p_now: nowIso()
+          });
+        } catch { console.error('media cleanup job release failed'); }
+      }
+      retries++;
+      continue;
+    }
+
+    try {
+      await deletePrivateObject(job.object_path);
+      await rpc('finish_private_media_cleanup_job', {
+        p_job_id: job.id, p_success: true, p_error_code: null, p_now: nowIso()
+      });
+      deleted++;
+    } catch (error) {
+      const diagnostic = error instanceof Error ? error.message.split(':')[0] : 'STORAGE_DELETE_FAILED';
+      try {
+        await rpc('finish_private_media_cleanup_job', {
+          p_job_id: job.id,
+          p_success: false,
+          p_error_code: /^[A-Z0-9_-]{1,80}$/i.test(diagnostic) ? diagnostic : 'STORAGE_DELETE_FAILED',
+          p_now: nowIso()
+        });
+      } catch { console.error('media cleanup retry scheduling failed'); }
+      retries++;
+    }
+  }
+  return { processed: jobs.length, deleted, retries };
+}
+
 async function handleAction(action: string, body: Record<string, unknown>, session: Awaited<ReturnType<typeof requireSession>>) {
   const userId = session.userId;
   switch (action) {
@@ -552,8 +610,37 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       // de Papelera. La recuperación es una acción explícita del usuario.
       if (state?.trashed_at) return { status: 'discarded', letterId: letter.id };
       const html = sanitizeRichHtml(body.body);
-      validateLetterImages(html, String(letter.id), userId);
-      return rpc('save_letter_draft', { p_sender_id: userId, p_letter_id: letter.id, p_title: String(body.title || '').slice(0,180), p_body: html, p_expected_revision: Number(body.expectedRevision || 1) });
+      await validateLetterImages(html, String(letter.id), userId);
+      const saved = await rpc('save_letter_draft', { p_sender_id: userId, p_letter_id: letter.id, p_title: String(body.title || '').slice(0,180), p_body: html, p_expected_revision: Number(body.expectedRevision || 1) });
+      // Al reemplazar imágenes, los triggers encolan las rutas anteriores.
+      // Aprovecha la escritura para procesar la cola sin retrasar el guardado si Storage no está disponible.
+      try { await processPendingPrivateMediaCleanup(8); }
+      catch (error) { console.error('media cleanup deferred', errorStatus(error).code); }
+      return saved;
+    }
+    case 'letter:edit': {
+      const letter = await checkedLetter(String(body.letterId || ''), userId);
+      if (letter.status !== 'sent' || letter.sender_id !== userId) throw new Error('LETTER_NOT_FOUND');
+      const state = await selectOne<Record<string, unknown>>('letter_user_state', {
+        select: 'trashed_at', letter_id: `eq.${letter.id}`, user_id: `eq.${userId}`
+      });
+      if (!state || state.trashed_at) throw new Error('LETTER_NOT_FOUND');
+      const html = sanitizeRichHtml(body.body);
+      if (!stripTags(html).trim()) throw new Error('INVALID_INPUT');
+      if (plainTextLength(html) > 100000) throw new Error('LETTER_BODY_TOO_LONG');
+      await validateLetterImages(html, String(letter.reply_to_letter_id || letter.id), userId);
+      const result = await rpc<Record<string, unknown>>('edit_sent_letter_content', {
+        p_sender_id: userId,
+        p_letter_id: letter.id,
+        p_title: String(body.title || 'Sin título').slice(0, 180),
+        p_body: html,
+        p_expected_revision: Number(body.expectedRevision || 1)
+      });
+      if (result?.status === 'saved' && result?.unchanged !== true) {
+        try { await processPendingPrivateMediaCleanup(8); }
+        catch (error) { console.error('media cleanup deferred after sent edit', errorStatus(error).code); }
+      }
+      return result;
     }
     case 'draft:send': {
       const letter = await checkedLetter(String(body.letterId || ''), userId);
@@ -568,7 +655,7 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       const parent = await checkedLetter(String(body.parentLetterId || ''), userId);
       if (parent.status !== 'sent' || parent.recipient_id !== userId) throw new Error('LETTER_NOT_FOUND');
       const html = sanitizeRichHtml(body.body);
-      validateLetterImages(html, String(parent.id), userId);
+      await validateLetterImages(html, String(parent.id), userId);
       if (!stripTags(html).trim()) throw new Error('INVALID_INPUT');
       return rpc('create_letter_reply', { p_actor_id: userId, p_parent_letter_id: parent.id, p_creation_request_id: String(body.creationRequestId || crypto.randomUUID()), p_title: String(body.title || '').slice(0,180), p_body: html });
     }
@@ -589,6 +676,15 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
     }
     case 'trash': {
       const letter = await checkedLetter(String(body.letterId || ''), userId);
+      const ownState = await selectOne<Record<string, unknown>>('letter_user_state', {
+        select: 'trashed_at', letter_id: `eq.${letter.id}`, user_id: `eq.${userId}`
+      });
+      // Al descartar una creación enviada por su autor, se retira del hilo
+      // compartido y vuelve a Borradores. Si ya estaba en Papelera, conserva
+      // la acción idempotente de Papelera y permite la eliminación definitiva.
+      if (letter.status === 'sent' && letter.sender_id === userId && !ownState?.trashed_at) {
+        return rpc('withdraw_sent_letter_to_draft', { p_user_id: userId, p_letter_id: letter.id });
+      }
       return rpc('move_letter_to_trash', { p_user_id: userId, p_letter_id: letter.id });
     }
     case 'restore': {
@@ -597,7 +693,20 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
     }
     case 'purge': {
       const letter = await checkedLetter(String(body.letterId || ''), userId);
-      return rpc('confirm_letter_permanent_deletion', { p_user_id: userId, p_letter_id: letter.id });
+      const result = await rpc<Record<string, unknown>>('confirm_letter_permanent_deletion', { p_user_id: userId, p_letter_id: letter.id });
+      if (result?.status === 'purged') {
+        try {
+          const mediaCleanup = await processPendingPrivateMediaCleanup(12);
+          return { ...result, mediaCleanup };
+        } catch (error) {
+          console.error('media cleanup deferred', errorStatus(error).code);
+          return { ...result, mediaCleanup: { processed: 0, deleted: 0, retries: 0, pending: true } };
+        }
+      }
+      return result;
+    }
+    case 'media:cleanup-pending': {
+      return { status: 'processed', ...(await processPendingPrivateMediaCleanup(20)) };
     }
     case 'notifications': {
       const cursorValue = body.cursor;
@@ -675,15 +784,21 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
         if (fileSize > 2 * 1024 * 1024) throw new Error('MEDIA_FILE_INVALID');
         path = `${userId}/avatars/${crypto.randomUUID()}.${extension}`;
       } else if (kind === 'letter-image') {
-        let base: Record<string, unknown>;
+        let baseId = '';
         if (body.letterId) {
-          base = await checkedLetter(String(body.letterId), userId);
-          if (base.status !== 'draft' || base.sender_id !== userId) throw new Error('LETTER_NOT_FOUND');
+          const letter = await checkedLetter(String(body.letterId), userId);
+          const canAttachToDraft = letter.status === 'draft' && letter.sender_id === userId;
+          const canEditOwnSentMessage = letter.status === 'sent' && letter.sender_id === userId;
+          if (!canAttachToDraft && !canEditOwnSentMessage) throw new Error('LETTER_NOT_FOUND');
+          // Las imágenes de una respuesta se guardan bajo el ID de la carta
+          // raíz del hilo; las de la carta original usan su propio ID.
+          baseId = String(letter.reply_to_letter_id || letter.id);
         } else {
-          base = await checkedLetter(String(body.parentLetterId || ''), userId);
-          if (base.status !== 'sent' || base.recipient_id !== userId) throw new Error('LETTER_NOT_FOUND');
+          const parent = await checkedLetter(String(body.parentLetterId || ''), userId);
+          if (parent.status !== 'sent' || parent.recipient_id !== userId) throw new Error('LETTER_NOT_FOUND');
+          baseId = String(parent.id);
         }
-        path = `letters/${String(base.id)}/${userId}/${crypto.randomUUID()}.${extension}`;
+        path = `letters/${baseId}/${userId}/${crypto.randomUUID()}.${extension}`;
       } else {
         throw new Error('INVALID_INPUT');
       }
@@ -696,7 +811,10 @@ async function handleAction(action: string, body: Record<string, unknown>, sessi
       let base: Record<string, unknown>;
       if (body.letterId) {
         base = await checkedLetter(String(body.letterId), userId);
-        if (base.status !== 'draft' || base.sender_id !== userId || match[1] !== String(base.id)) throw new Error('LETTER_NOT_FOUND');
+        const canAttachToDraft = base.status === 'draft' && base.sender_id === userId;
+        const canEditOwnSentMessage = base.status === 'sent' && base.sender_id === userId;
+        const expectedBaseId = String(base.reply_to_letter_id || base.id);
+        if ((!canAttachToDraft && !canEditOwnSentMessage) || match[1] !== expectedBaseId) throw new Error('LETTER_NOT_FOUND');
       } else {
         base = await checkedLetter(String(body.parentLetterId || ''), userId);
         if (base.status !== 'sent' || base.recipient_id !== userId || match[1] !== String(base.id)) throw new Error('LETTER_NOT_FOUND');
@@ -868,3 +986,4 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { ok: false, code: mapped.code, message: mapped.message }, mapped.status, headers);
   }
 });
+

@@ -1,4 +1,5 @@
 import { showToast } from '../utils/dom.js';
+import { putLocalDraft } from '../services/local-drafts.js';
 
 export class NavigationController {
     routeFromHash() {
@@ -13,16 +14,58 @@ export class NavigationController {
       return true;
     }
 
+    rememberCurrentPage(route = this.state.route) {
+      if (!route) return;
+      const letterId = route === 'letter' ? String(this.state.selectedLetter?.letter?.id || '') : '';
+      const editor = route === 'write' && this.state.editor
+        ? { ...this.state.editor, ...(this.readEditorFromDom?.() || {}) } : null;
+      const entry = { route, letterId, search: String(this.state.search || ''), scrollY: window.scrollY || window.pageYOffset || 0,
+        editor, localDraftKey: route === 'write' ? this.localDraftKey : null };
+      this.navigationHistory ||= [];
+      const last = this.navigationHistory.at(-1);
+      if (last?.route === entry.route && last?.letterId === entry.letterId) return;
+      this.navigationHistory.push(entry);
+      if (this.navigationHistory.length > 40) this.navigationHistory.shift();
+    }
+
+    async navigateBack(fallbackRoute = null) {
+      const entry = this.navigationHistory?.pop?.() || null;
+      if (entry?.route === 'letter' && entry.letterId) {
+        await this.openLetter(entry.letterId, true, this.letterSummary(entry.letterId), { skipHistory: true });
+      } else if (entry?.route === 'write' && entry.editor) {
+        this.state.search = entry.search || '';
+        this.localDraftKey = entry.localDraftKey || this.localDraftKeyFor('new');
+        this.state.editor = { ...entry.editor, saving: false };
+        this.state.route = 'write';
+        this.state.routeLoading = false;
+        this.state.routeError = null;
+        history.replaceState(null, '', '#/write');
+        this.render();
+        this.focusPageHeading?.();
+      } else {
+        const route = entry?.route || fallbackRoute || this.previousListRoute || 'home';
+        if (!entry) this.state.search = '';
+        else this.state.search = entry.search || '';
+        await this.openRoute(route, true, { focus: true, skipHistory: true, preserveSearch: Boolean(entry) });
+      }
+      if (entry?.scrollY >= 0) {
+        await new Promise(resolve => requestAnimationFrame(() => resolve()));
+        window.scrollTo({ top: entry.scrollY, behavior: 'auto' });
+      }
+    }
+
     async openRoute(route, updateHash = true, options = {}) {
       const shouldFocus = options?.focus === true;
       const focusHeading = () => {
         if (shouldFocus && this.state.route === route) this.focusPageHeading();
       };
       const previousRoute = this.state.route;
-      // La búsqueda es efímera: no se conserva al salir de una sección ni al volver a ella.
+      if (previousRoute && previousRoute !== route && !options?.skipHistory) this.rememberCurrentPage(previousRoute);
+      if (previousRoute === 'settings' && route !== 'settings') this.discardThemePreview?.();
+      // La búsqueda se restaura solo al regresar mediante la pila de navegación.
       window.clearTimeout(this.searchTimer);
       this.searchRequestId = (this.searchRequestId || 0) + 1;
-      this.state.search = '';
+      if (!options?.preserveSearch) this.state.search = '';
       const allowed = new Set(['home','inbox','sent','write','drafts','favorites','archive','trash','letter','notifications','settings']);
       if (!allowed.has(route) || route === 'letter') route = 'home';
   
@@ -34,7 +77,7 @@ export class NavigationController {
         const storageKey = this.localDraftKey || this.localDraftKeyFor(snapshot.letterId ? `letter:${snapshot.letterId}` : 'new');
         // Representa inmediatamente el borrador recién abandonado. La lista no
         // espera a IndexedDB ni a la creación remota para volver a mostrarlo.
-        if (route === 'drafts' && !snapshot.parentLetterId && (snapshot.letterId || this.hasDraftBody(snapshot.body))) {
+        if (route === 'drafts' && !snapshot.editingSent && !snapshot.parentLetterId && (snapshot.letterId || this.hasDraftBody(snapshot.body))) {
           this.state.localDraftPreview = {
             ...snapshot, id: snapshot.letterId || `local:${snapshot.creationRequestId}`,
             localDraftKey: storageKey, status: 'draft', localOnly: !snapshot.letterId,
@@ -43,11 +86,25 @@ export class NavigationController {
           };
         }
         this.state.editor = null;
-        this.localDraftKey = storageKey;
-        // Entrar y salir del editor sin escribir el cuerpo no genera un borrador.
-        // Una carta ya existente sigue guardando incluso si se vacía para editarla.
-        if (snapshot.letterId || this.hasDraftBody(snapshot.body)) {
-          // No retrasar el cambio de sección esperando IndexedDB: la cola se resuelve aparte.
+        this.localDraftKey = this.localDraftKeyFor(`new:${crypto.randomUUID()}`);
+        // Las respuestas aún no enviadas son borradores locales del hilo; no
+        // deben enviarse al endpoint de borradores de cartas independientes.
+        if (snapshot.editingSent && snapshot.letterId) {
+          putLocalDraft({ key: storageKey, ...snapshot, editingSent: true, localOnly: true, pendingSync: false, savedAt: snapshot.savedAt || new Date().toISOString() }).catch(() => {});
+        } else if (snapshot.parentLetterId && this.hasDraftBody(snapshot.body)) {
+          const replySnapshot = { ...snapshot, key: storageKey, saved: true, saving: false, localOnly: true, pendingSync: false, savedAt: snapshot.savedAt || new Date().toISOString() };
+          putLocalDraft(replySnapshot).then(() => this.loadLocalReplyDrafts?.()).then(() => {
+            if (this.state.route === 'drafts') this.renderListResultsOnly();
+          }).catch(() => {});
+        } else if (snapshot.letterId || this.hasDraftBody(snapshot.body)) {
+          if (route === 'drafts' && !snapshot.parentLetterId) {
+            this.state.localDraftPreview = {
+              ...snapshot, id: snapshot.letterId || `local:${snapshot.creationRequestId}`,
+              localDraftKey: storageKey, status: 'draft', localOnly: !snapshot.letterId,
+              updated_at: snapshot.savedAt || new Date().toISOString(),
+              created_at: snapshot.savedAt || new Date().toISOString()
+            };
+          }
           this.queueDraftSync(snapshot, storageKey);
         } else {
           this.clearEmptyNewDraft(storageKey).catch(() => {});
@@ -83,6 +140,11 @@ export class NavigationController {
         this.state.pagination = { cursor: null, loadedCount: 0, limit: 40, hasMore: false, loading: false };
       }
       this.state.route = route;
+      if (route === 'drafts') {
+        this.loadLocalReplyDrafts?.().then(() => { if (this.state.route === 'drafts') this.renderListResultsOnly(); }).catch(() => {});
+      } else {
+        this.state.localReplyDrafts = [];
+      }
       this.state.routeError = null;
       this.state.routeNotice = null;
       this.state.mobileNavOpen = false;
@@ -209,10 +271,11 @@ export class NavigationController {
       }
       if (route === 'notifications') return { notifications: await this.repository.notifications(null, 30) };
       if (route === 'settings') {
+        const themePreferenceVersion = this._themePreferenceVersion || 0;
         const [settings, sessions, invitation] = await Promise.all([
           this.repository.settings(), this.repository.sessions(), this.session.api.auth('invitation:status')
         ]);
-        return { settings, sessions, invitation };
+        return { settings, sessions, invitation, themePreferenceVersion };
       }
       return {};
     }
@@ -248,7 +311,17 @@ export class NavigationController {
           hasMore: Boolean(data.notifications?.hasMore), loading: false
         };
       } else if (route === 'settings') {
-        this.state.settings = { ...this.state.settings, ...(data.settings?.settings || {}) };
+        const localTheme = this.state.settings.theme;
+        const themeChangedSinceFetch = Number.isFinite(data.themePreferenceVersion)
+          && data.themePreferenceVersion !== (this._themePreferenceVersion || 0);
+        const savedTheme = ['light', 'dark', 'system'].includes(data.settings?.settings?.theme)
+          ? data.settings.settings.theme : (this.readCachedTheme?.() || 'system');
+        this._savedThemePreference = savedTheme;
+        this.state.settings = {
+          ...this.state.settings,
+          ...(data.settings?.settings || {}),
+          ...(this._themePreferenceDirty || themeChangedSinceFetch ? { theme: localTheme } : { theme: savedTheme })
+        };
         const previousProfile = this.state.profile || { avatarUrl: null, avatarPath: null };
         const incomingProfile = data.settings?.profile || previousProfile;
         const sameAvatarPath = Boolean(previousProfile.avatarPath)
@@ -273,8 +346,8 @@ export class NavigationController {
           // El código recién generado vive solo en memoria; la API de estado nunca lo devuelve.
           revealedCode: this.state.invitation?.revealedCode || ''
         };
-        this.cacheTheme(this.state.settings.theme);
-        this.applyTheme(this.state.settings.theme);
+        this.cacheTheme(savedTheme);
+        this.applyTheme(this.state.settings.theme, { cache: !this._themePreferenceDirty && !themeChangedSinceFetch });
       }
     }
 

@@ -1,3 +1,44 @@
+## Release v49 — retirada de cartas, purga del autor e imágenes (27 de noviembre de 2026, Colombia)
+
+**Estado remoto después del release:** proyecto `tiqbmuubpbmxqvtkcdhq`, `ACTIVE_HEALTHY`, PostgreSQL 17.11. `auth-api` continúa en v11 ACTIVE, sin cambios. `letters-api` está en **v13 ACTIVE**, `verify_jwt=false` (la sesión opaca se valida dentro de la función). El ledger remoto contiene 26 entradas; la migración `withdraw_sent_letters_and_owner_purge` fue registrada por Supabase con versión `20261128031503`. El archivo local correspondiente se conserva como `20261128030000_withdraw_sent_letters_and_owner_purge.sql`; **no debe volver a ejecutarse**, porque el timestamp que asignó Supabase en el ledger no coincide con el timestamp del archivo local.
+
+La nueva RPC `withdraw_sent_letter_to_draft(uuid,uuid)` existe. Se comprobó que solo `service_role` puede ejecutarla; `anon` y `authenticated` no tienen `EXECUTE`. La RPC de purga y las RPC de procesamiento de la cola de limpieza conservan el mismo aislamiento. La función v13 incluye `letter:edit`, `media:sign-letter-thumbnail`, las reglas de edición de medios privados del remitente y el procesamiento acotado de Storage cleanup tras edición/purga. `auth-api` no se desplegó ni modificó.
+
+La migración reemplazó funciones y grants; no ejecutó DML sobre cartas, respuestas, usuarios ni objetos privados. No se lanzaron operaciones de purga sobre datos reales. Las pruebas con las dos sesiones reales deben realizarse desde la aplicación. El inventario local v49 contiene 31 archivos SQL: 17 timestamps comunes al corte remoto del 24 de noviembre, tres archivos legacy/no canónicos y diez archivos locales propuestos; uno de esos diez se aplicó con la versión de ledger indicada y nueve propuestas diferentes siguen requiriendo reconciliación individual. No ejecutes `supabase db push`, `db reset` ni `migration repair` para resolver esa deriva. El archivo adicional `20261125010000_private_media_cleanup_queue.sql` no tiene una entrada con su timestamp en el ledger. Sin embargo, se verificó en remoto que existen la tabla `private_media_cleanup_jobs`, las RPC `claim_private_media_cleanup_jobs` y `finish_private_media_cleanup_job`, y los triggers de captura de medios en `letters` y `letter_versions`. No reapliques el archivo local; compara su definición con el esquema remoto antes de reconciliar historial.
+
+# Snapshot histórico de Supabase (verificación de solo lectura, 24 de noviembre de 2026)
+
+## Snapshot histórico anterior al release v49 — código local v48 (27 de noviembre de 2026, antes del despliegue)
+
+El inventario local v48 contiene 30 archivos SQL y nueve propuestas locales pendientes de reconciliación; ocho son propuestas históricas y la novena es la migración nueva de edición versionada. La migración de limpieza de medios v46 permanece como pendiente específica adicional. El baseline remoto de solo lectura que sigue a continuación no ha cambiado: 25 migraciones registradas y `auth-api`/`letters-api` v11 ACTIVE al 24 de noviembre de 2026. La entrega local v48 contiene 30 archivos SQL: 17 timestamps comunes al ledger, tres archivos legacy/no canónicos, ocho propuestas históricas aún pendientes de reconciliación y la nueva propuesta `20261127090000_edit_sent_letter_content.sql`. La migración v46 `20261125010000_private_media_cleanup_queue.sql` también sigue pendiente; ninguna de esas dos migraciones se ha aplicado en producción. La operación `letter:edit` se añadió a la fuente local de `letters-api`, pero no se desplegó.
+
+La edición usa una RPC `SECURITY DEFINER`/`service_role` (el ejecutor de backend valida que el remitente de la sesión coincide con `p_sender_id`), control de revisión esperada y snapshots en `letter_versions`. La ruta de release exige restaurar una copia aislada, verificar trigger/RPC/permisos y ejecutar pruebas de integración antes de aplicar la migración; luego se despliega la Edge Function compatible. No ejecutar `supabase db push` ni aplicar la migración por lote.
+
+## Release de corrección de hallazgos v46 — código local pendiente de aplicar
+
+El inventario local v48 contiene 30 archivos SQL y nueve propuestas locales posteriores al ledger: las ocho propuestas históricas y la nueva migración de edición versionada. La limpieza de medios v46 y la edición versionada v48 se mantienen como migraciones locales independientes, ambas sin aplicar remotamente.
+
+Se volvió a consultar el proyecto `tiqbmuubpbmxqvtkcdhq` con el conector Supabase. En esta revisión no se ejecutaron escrituras en producción ni se desplegaron funciones.
+
+| Elemento | Estado remoto observado |
+|---|---|
+| Proyecto | `ACTIVE_HEALTHY`, PostgreSQL 17.11, `us-west-2` |
+| `auth-api` | ACTIVE, v11, `verify_jwt=false` |
+| `letters-api` | ACTIVE, v11, `verify_jwt=false` |
+| Ledger de migraciones | 25 entradas; última `20261124052017_ensure_private_media_bucket` |
+| `private-media` | Existe, privado, 5 MiB, JPEG/PNG/WebP; solo se consultó el inventario de metadatos |
+| RPC del backend ya presentes | Las funciones de autenticación, correspondencia, paginación, rate limit y Web Push consultadas existen y tienen SECURITY INVOKER, search_path fijado y EXECUTE únicamente para `service_role` |
+| Cola de limpieza | Aún no está aplicada remotamente; dos RPC nuevos requeridos por la nueva `letters-api` están ausentes hasta aplicar `20261125010000_private_media_cleanup_queue.sql` |
+| Despliegues y cambios SQL en esta revisión | Ninguno |
+
+La actualización local corrige el ciclo de limpieza de adjuntos con una migración aditiva, agrega backup v2 con los bytes del bucket privado, añade restauración de Storage por separado, permite `blob:` solo en `img-src` y amplía las pruebas de controladores. **La migración nueva y la fuente Edge Function no deben desplegarse por separado**: primero se prueba y aplica la migración única en un entorno aislado; luego se aplica en producción y se publica el backend mediante el workflow manual `release-supabase-edge.yml`. Ese workflow exige que el diagnóstico de contrato encuentre todas las RPC con firmas y grants esperados, por lo que bloquea el despliegue mientras falte la cola.
+
+El manifiesto `supabase/diagnostics/edge-rpc-contract.json` incluye las llamadas RPC extraídas del código local, más las dos funciones de limpieza. El informe de reconciliación continúa mostrando diferencias históricas de timestamps; no se considera que toda la deriva del ledger esté reconciliada y no debe ejecutarse `supabase db push`, `db reset` ni un `migration repair` masivo.
+
+El backup v2 no está activo hasta configurar `NR_BACKUP_STORAGE_SERVICE_KEY` y el resto de los secretos/variables del Environment GitHub `database-backups`, y completar una primera ejecución seguida de una restauración de prueba. La copia de base de datos y objetos Storage no es una instantánea transaccional global; el manifiesto y la enumeración doble detectan cambios del conjunto de archivos durante la descarga.
+
+---
+
 # Estado del proyecto Supabase
 
 ## Actualización remota v35 — bucket privado y carga de medios (24 de noviembre de 2026)
@@ -17,7 +58,7 @@ La comprobación del frontend y de los registros de Storage identificó que el b
 | `user_profiles.avatar_path` | Columna y constraint existentes antes de esta entrega |
 | Revocación global | `revoke_other_app_sessions` aplicado y verificado; solo `service_role` puede ejecutarlo |
 
-El inventario local contiene 28 migraciones/archivos SQL (28 archivos SQL locales): 17 timestamps coinciden con el ledger, tres archivos son legacy/no canónicos y ocho propuestas anteriores continúan pendientes de reconciliación. La antigua propuesta `20261123193000_private_media_and_profile_avatars.sql` sigue sin una entrada homónima en el ledger; sus objetos de perfil ya existían antes y la nueva migración solo registra la configuración del bucket. No vuelvas a aplicar esa propuesta antigua ni ejecutes `supabase db push` para resolver la deriva automáticamente.
+El inventario local v48 contiene 30 archivos SQL: 17 timestamps coinciden con el ledger, tres archivos son legacy/no canónicos, ocho propuestas históricas continúan pendientes de reconciliación y dos migraciones específicas siguen pendientes de aplicación: limpieza de medios y edición versionada. La antigua propuesta `20261123193000_private_media_and_profile_avatars.sql` sigue sin una entrada homónima en el ledger; sus objetos de perfil ya existían antes y la nueva migración solo registra la configuración del bucket. No vuelvas a aplicar esa propuesta antigua ni ejecutes `supabase db push` para resolver la deriva automáticamente.
 
 Las cargas de avatar observadas demuestran que el bucket y el endpoint de upload aceptan el archivo. La inserción de imágenes en el cuerpo de una carta y la visualización cruzada desde la segunda cuenta requieren una comprobación manual con las dos cuentas reales; no se afirma que esas pruebas funcionales ya se hayan completado.
 

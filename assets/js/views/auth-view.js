@@ -4,7 +4,7 @@ export function renderBoot(view) {
     view.root.innerHTML = '<div class="boot-screen" role="status"><span class="brand-seal">N</span><p>Abriendo nuestro rincón…</p></div>';
 }
 
-export function renderLogin(view, error = '') {
+export function renderLogin(view, error = '', notice = '') {
     view.root.innerHTML = `
       <main class="auth-page">
         <section class="auth-story">
@@ -16,6 +16,7 @@ export function renderLogin(view, error = '') {
           <span class="eyebrow">Bienvenidos de vuelta</span><h2>Entrar a nuestro rincón</h2><p>Inicia sesión con tu nombre de usuario.</p>
           <div class="field"><label for="login-identifier">Nombre de usuario</label><input id="login-identifier" name="identifier" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="48" placeholder="Tu nombre de usuario"></div>
           <div class="field"><label for="login-password">Contraseña</label><input id="login-password" type="password" name="password" autocomplete="current-password" required placeholder="Tu contraseña"></div>
+          ${notice ? `<div class="form-notice auth-success-notice" role="status">${escapeHtml(notice)}</div>` : ''}
           <div class="form-error" role="alert">${escapeHtml(error)}</div>
           <button class="btn btn-primary btn-block" type="submit">Entrar <span aria-hidden="true">→</span></button>
           <div class="auth-switch">¿Todavía no tienes una cuenta? <button class="text-button" type="button" data-action="show-register">Crear cuenta</button><br><button class="text-button" type="button" data-action="show-recovery">¿Olvidaste tu contraseña?</button></div>
